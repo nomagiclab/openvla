@@ -75,10 +75,10 @@ robot.act(action, ...)
 ```
 
 We also provide an [example script for fine-tuning OpenVLA models for new tasks and 
-embodiments](./vla-scripts/finetune.py); this script supports different fine-tuning modes -- including (quantized) 
+embodiments](./vla_scripts/finetune.py); this script supports different fine-tuning modes -- including (quantized) 
 low-rank adaptation (LoRA) supported by [HuggingFace's PEFT library](https://huggingface.co/docs/peft/en/index). 
 
-For deployment, we provide a lightweight script for [serving OpenVLA models over a REST API](./vla-scripts/deploy.py), 
+For deployment, we provide a lightweight script for [serving OpenVLA models over a REST API](./vla_scripts/deploy.py), 
 providing an easy way to integrate OpenVLA models into existing robot control stacks, 
 removing any requirement for powerful on-device compute.
 
@@ -162,7 +162,7 @@ ninja --version; echo $?  # Verify Ninja --> should return exit code "0"
 pip install "flash-attn==2.5.5" --no-build-isolation
 ```
 
-**Note:** See `vla-scripts/` for full training and verification scripts for OpenVLA models. Note that `scripts/` is
+**Note:** See `vla_scripts/` for full training and verification scripts for OpenVLA models. Note that `scripts/` is
 mostly a holdover from the original (base) `prismatic-vlms` repository, with support for training and evaluating
 visually-conditioned language models; while you can use this repo to train VLMs AND VLAs, note that trying to generate
 language (via `scripts/generate.py`) with existing OpenVLA models will not work (as we only train current OpenVLA models
@@ -174,7 +174,7 @@ to generate actions, and actions alone).
 
 In this section, we discuss fine-tuning OpenVLA using Low-Rank Adaptation (LoRA) via the Hugging Face `transformers` library,
 which is recommended if you do not have sufficient compute to fully fine-tune a 7B-parameter model. The main script for LoRA
-fine-tuning is `vla-scripts/finetune.py`. (If you instead wish to do full fine-tuning, please see the
+fine-tuning is `vla_scripts/finetune.py`. (If you instead wish to do full fine-tuning, please see the
 [Fully Fine-Tuning OpenVLA](#fully-fine-tuning-openvla) section.)
 
 Below we show an example of how you can fine-tune the main OpenVLA checkpoint ([`openvla-7b`](https://huggingface.co/openvla/openvla-7b))
@@ -201,7 +201,7 @@ to maintain an effective batch size that is large enough for stable training. If
 PyTorch Distributed Data Parallel (DDP), simply set `--nproc-per-node` in the `torchrun` command below to the number of available GPUs.
 
 ```bash
-torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
+torchrun --standalone --nnodes 1 --nproc-per-node 1 vla_scripts/finetune.py \
   --vla_path "openvla/openvla-7b" \
   --data_root_dir <PATH TO BASE DATASETS DIR> \
   --dataset_name bridge_orig \
@@ -225,14 +225,14 @@ To LoRA fine-tune on a different dataset, you can download the dataset from the 
 mixture (see [this custom script](https://github.com/moojink/rlds_dataset_mod/blob/main/prepare_open_x.sh) for an example of how to download datasets
 from OXE). Alternatively, if you have a custom dataset that is not part of OXE, you can either (a) convert the dataset to the RLDS format which is
 compatible with our fine-tuning script (see [this repo](https://github.com/kpertsch/rlds_dataset_builder) for instructions on this), or (b) use your own
-custom PyTorch Dataset wrapper (see comments in `vla-scripts/finetune.py` for instructions). We recommend option (a) for most users; the RLDS dataset and
+custom PyTorch Dataset wrapper (see comments in `vla_scripts/finetune.py` for instructions). We recommend option (a) for most users; the RLDS dataset and
 dataloader are tested more extensively since we used these for all of our pretraining and fine-tuning experiments.
 
 For option (a), after you converted your dataset to RLDS, you need to register it with our data loader, by registering a dataset
 config [here](prismatic/vla/datasets/rlds/oxe/configs.py#L54) and a dataset transform function [here](prismatic/vla/datasets/rlds/oxe/transforms.py#L828).
 
-Once you have integrated your new dataset, you can launch LoRA fine-tuning with the same `vla-scripts/finetune.py` script above. If you run into any issues,
-please visit the [VLA Troubleshooting](#vla-troubleshooting) section or search for a similar issue in the [OpenVLA GitHub Issues page](https://github.com/openvla/openvla/issues?q=)
+Once you have integrated your new dataset, you can launch LoRA fine-tuning with the same `vla_scripts/finetune.py` script above. If you run into any issues,
+please visit the [VLA Troubleshooting](#vla_scripts-troubleshooting) section or search for a similar issue in the [OpenVLA GitHub Issues page](https://github.com/openvla/openvla/issues?q=)
 (including "Closed" issues). If you cannot find a similar issue there, feel free to create a new issue.
 
 ## Fully Fine-Tuning OpenVLA
@@ -295,7 +295,7 @@ Now, launch the training script. If you wish to use a different number of nodes 
 [`prismatic/conf/vla.py`](prismatic/conf/vla.py) and then change the `--nnodes` and `--nproc-per-node` arguments below accordingly.
 
 ```bash
-torchrun --standalone --nnodes 1 --nproc-per-node 8 vla-scripts/train.py \
+torchrun --standalone --nnodes 1 --nproc-per-node 8 vla_scripts/train.py \
   --pretrained_checkpoint <PATH TO openvla/openvla-7b-prismatic CHECKPOINT FILE: step-295000-epoch-40-loss=0.2200.pt> \
   --vla.type prism-dinosiglip-224px+mx-bridge \
   --data_root_dir <PATH TO BASE DATASETS DIR> \
@@ -332,12 +332,12 @@ Alternatively, if you have a custom dataset that is not part of OXE, you can con
 * [`prismatic/vla/datasets/rlds/oxe/configs.py`](prismatic/vla/datasets/rlds/oxe/configs.py): Add a new configuration specifying your fine-tuning dataset's observation and action spaces
 to the `OXE_DATASET_CONFIGS` dictionary.
 
-After completing the steps above, you can start full fine-tuning using the `vla-scripts/train.py` script. Make sure to set the `--vla.type` argument to the new `vla_id` that you added in `prismatic/conf/vla.py`.
+After completing the steps above, you can start full fine-tuning using the `vla_scripts/train.py` script. Make sure to set the `--vla.type` argument to the new `vla_id` that you added in `prismatic/conf/vla.py`.
 
 When you are finished with fine-tuning, you will need to convert the final model checkpoint to a version that is
 compatible with the Hugging Face `transformers` library. See the [Converting Prismatic Models to Hugging Face](#converting-prismatic-models-to-hugging-face) section for instructions.
 
-If you run into any issues, please visit the [VLA Troubleshooting](#vla-troubleshooting) section or search for a similar issue in the
+If you run into any issues, please visit the [VLA Troubleshooting](#vla_scripts-troubleshooting) section or search for a similar issue in the
 [OpenVLA GitHub Issues page](https://github.com/openvla/openvla/issues?q=) (including "Closed" issues). If you cannot find a similar issue there, feel free to create a new issue.
 
 ### Converting Prismatic Models to Hugging Face
@@ -349,7 +349,7 @@ new dataset), you will need to convert the final checkpoint to a version that is
 Let's say your training run directory is `PRISMATIC_RUN_DIR` (e.g., `prism-dinosiglip-224px+mx-oxe-magic-soup-plus+n8+b32+x7`).
 Inside this directory, there should be a directory called `checkpoints` which contains saved model checkpoints (e.g.,
 `step-295000-epoch-40-loss=0.2200.pt`). The Prismatic-to-Hugging-Face conversion script
-([convert_openvla_weights_to_hf.py](vla-scripts/extern/convert_openvla_weights_to_hf.py)) expects a checkpoint file
+([convert_openvla_weights_to_hf.py](vla_scripts/extern/convert_openvla_weights_to_hf.py)) expects a checkpoint file
 named `latest-checkpoint.pt`. Therefore, you should first create a symbolic link called `latest-checkpoint.pt` that
 points to the checkpoint file that you wish to convert:
 
@@ -364,7 +364,7 @@ ln -s <YOUR CHECKPOINT FILENAME> latest-checkpoint.pt
 Then, launch the conversion script to convert the checkpoint from the Prismatic VLMs format to the Hugging Face format:
 
 ```bash
-python vla-scripts/extern/convert_openvla_weights_to_hf.py \
+python vla_scripts/extern/convert_openvla_weights_to_hf.py \
     --openvla_model_path_or_id <PRISMATIC_RUN_DIR> \
     --output_hf_model_local_path <OUTPUT DIR FOR CONVERTED CHECKPOINT>
 ```
@@ -406,7 +406,7 @@ vla = AutoModelForVision2Seq.from_pretrained(
 
 We provide full instructions and configurations for training VLA models on (arbitrary subsets of) the
 [Open X-Embodiment (OXE) Dataset](https://robotics-transformer-x.github.io/). If you run in to any issues with 
-the following, see [VLA Troubleshooting](#vla-troubleshooting) below (or file a GitHub Issue).
+the following, see [VLA Troubleshooting](#vla_scripts-troubleshooting) below (or file a GitHub Issue).
 
 ### VLA Pretraining Datasets
 
@@ -420,7 +420,7 @@ weights) we use to train `openvla-7b`.
 
 ### VLA Configuration & Training Script
 
-The entry point for VLA training is [`vla-scripts/train.py`](vla-scripts/train.py). We use 
+The entry point for VLA training is [`vla_scripts/train.py`](vla_scripts/train.py). We use 
 [`draccus`](https://pypi.org/project/draccus) to provide a modular, dataclass-based interface for specifying VLA 
 training configurations; existing VLA configurations are in [`prismatic/conf/vla.py`](prismatic/conf/vla.py). You can 
 add your own training configuration and refer to it using the `--vla.type` command line argument.
@@ -429,7 +429,7 @@ We use PyTorch Fully Sharded Data Parallel (FSDP) to distribute training across 
 
 ```bash
 # Train VLA on BridgeData V2 with the Prismatic DINO-SigLIP 224px Backbone on a Single Node (w/ 8 GPUs)
-torchrun --standalone --nnodes 1 --nproc-per-node 8 vla-scripts/train.py \
+torchrun --standalone --nnodes 1 --nproc-per-node 8 vla_scripts/train.py \
   --vla.type "prism-dinosiglip-224px+mx-bridge" \
   --data_root_dir <PATH TO OXE DATA ROOT> \
   --run_root_dir <PATH TO LOG/CHECKPOINT ROOT> \
@@ -622,7 +622,7 @@ Please file a GitHub Issue if you run into any problems.
 High-level overview of repository/project file-tree:
 
 + `prismatic` - Package source; provides core utilities for model loading, training, data preprocessing, etc.
-+ `vla-scripts/` - Core scripts for training, fine-tuning, and deploying VLAs.
++ `vla_scripts/` - Core scripts for training, fine-tuning, and deploying VLAs.
 + `experiments/` - Code for evaluating OpenVLA policies in robot environments.
 + `LICENSE` - All code is made available under the MIT License; happy hacking!
 + `Makefile` - Top-level Makefile (by default, supports linting - checking & auto-fix); extend as needed.

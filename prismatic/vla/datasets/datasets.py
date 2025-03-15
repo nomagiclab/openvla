@@ -5,6 +5,7 @@ Lightweight PyTorch Dataset Definition for wrapping RLDS TFDS Pipeline; just def
 format to OpenVLA, IterableDataset shim.
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Tuple, Type
@@ -257,50 +258,48 @@ class RLDSLeRobotDataset(LeRobotDataset):
     def __init__(
         self,
         repo_id: str,
-        action_tokenizer: ActionTokenizer,
-        base_tokenizer: PreTrainedTokenizerBase,
-        image_transform: ImageTransform,
-        prompt_builder_fn: Type[PromptBuilder],
+        rlds_action_tokenizer: ActionTokenizer,
+        rlds_base_tokenizer: PreTrainedTokenizerBase,
+        rlds_image_transform: ImageTransform,
+        rlds_prompt_builder_fn: Type[PromptBuilder],
         *,
         root: str | Path | None = None,
         episodes: list[int] | None = None,
         image_transforms: Callable | None = None,
         delta_timestamps: dict[list[float]] | None = None,
         tolerance_s: float = 1e-4,
+        revision: str | None = None,
+        force_cache_sync: bool = False,
         download_videos: bool = True,
-        local_files_only: bool = False,
         video_backend: str | None = None,
     ) -> None:
         super().__init__(
             repo_id,
-            root,
-            episodes,
-            image_transforms,
-            delta_timestamps,
-            tolerance_s,
-            download_videos,
-            local_files_only,
-            video_backend,
+            root=root,
+            episodes=episodes,
+            image_transforms=image_transforms,
+            delta_timestamps=delta_timestamps,
+            tolerance_s=tolerance_s,
+            revision=revision,
+            force_cache_sync=force_cache_sync,
+            download_videos=download_videos,
+            video_backend=video_backend,
         )
         assert isinstance(self.meta, LeRobotDatasetMetadata)
 
-        self.action_tokenizer = action_tokenizer
-        self.base_tokenizer = base_tokenizer
-        self.image_transform = image_transform
-        self.prompt_builder_fn = prompt_builder_fn
+        self.action_tokenizer = rlds_action_tokenizer
+        self.base_tokenizer = rlds_base_tokenizer
+        self.image_transform = rlds_image_transform
+        self.prompt_builder_fn = rlds_prompt_builder_fn
 
-        # NOTE: We expect the dataset to store statistics for action de-normalization:
+        # NOTE: We expect the dataset to store statistics in `meta/stats.json` 
+        # for action de-normalization:
         # 1/100st quantile of each action under "q01" and 99/100th quantile under "q99".
-        print(self.meta.stats)
+        # This won't be true of v2.1 LeRobotDatasets, so the file needs to be supplied manually
         self.dataset_statistics = {
-            "rlds_lerobot_dataset": {
-                "action": {
-                    "q01": np.array(self.meta.stats["action"]["q01"]),
-                    "q99": np.array(self.meta.stats["action"]["q99"]),
-                }
-            }
+            "rlds_lerobot_dataset":
+            json.load(open(Path(root) / "meta" / "stats.json"))
         }
-        
         # NOTE: This is hardcoded as a social contract.
         # This is the only key to image observations that will be used.
         self.obs_image_key = "observation.images.side"

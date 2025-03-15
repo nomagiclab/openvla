@@ -3,7 +3,7 @@
 # Creates a Python 3.10 virtual environment, installs dependencies,
 # and downloads the OpenVLA model. Intended for environments
 # without Docker support where GPU is Slurm-managed (e.g. entropy).
-# Designed to be used in conjunction with vla-scripts/finetune.sub.
+# Designed to be used in conjunction with vla_scripts/finetune.sub.
 #
 # Usage: ./manual_create_env.sh
 #

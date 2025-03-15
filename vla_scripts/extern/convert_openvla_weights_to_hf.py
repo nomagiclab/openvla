@@ -9,7 +9,7 @@ Theoretically, these changes should be fully compatible with directly merging th
 line, with first-class support.
 
 Usage:
-    python vla-scripts/extern/convert_openvla_weights_to_hf.py \
+    python vla_scripts/extern/convert_openvla_weights_to_hf.py \
         --openvla_model_path_or_id <PATH TO PRISMATIC TRAINING RUN DIR> \
         --output_hf_model_local_path <OUTPUT DIR FOR CONVERTED CHECKPOINT>
 """

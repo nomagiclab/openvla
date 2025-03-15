@@ -11,8 +11,8 @@ Notes & Benchmarks:
         + One 80 GB GPU can fit a Batch Size of 24
 
 Run with:
-    - [Single Node Multi-GPU (= $K) ]: torchrun --standalone --nnodes 1 --nproc-per-node $K vla-scripts/finetune.py
-    - [Override Config Values]: torchrun --standalone --nnodes 1 --nproc-per-node $K vla-scripts/finetune.py \
+    - [Single Node Multi-GPU (= $K) ]: torchrun --standalone --nnodes 1 --nproc-per-node $K vla_scripts/finetune.py
+    - [Override Config Values]: torchrun --standalone --nnodes 1 --nproc-per-node $K vla_scripts/finetune.py \
                                     --data_root_dir <PATH/TO/RLDS/DATASETS/DIRECTORY> \
                                     --dataset_name <DATASET_NAME> \
                                     --run_root_dir <PATH/TO/LOGS/DIR> \
@@ -22,7 +22,6 @@ Run with:
 import os
 import json
 from collections import deque
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -43,85 +42,23 @@ import wandb
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
+from prismatic.vla.datasets import RLDSLeRobotDataset
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
 
+from vla_scripts.utils.finetune_config import FinetuneConfig
+
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-
-# # === Utilities ===
-# # fmt: off
-# def create_vision_transform(vla: nn.Module, input_size: int) -> Callable[[Image.Image], torch.Tensor]:
-#     """Gets image transform for the vision encoder."""
-#     data_cfg = timm.data.resolve_model_data_config(vla.vision_backbone)
-#     data_cfg["input_size"] = (3, input_size, input_size)
-#     return timm.data.create_transform(
-#         input_size=data_cfg["input_size"],
-#         interpolation=data_cfg["interpolation"],
-#         mean=data_cfg["mean"],
-#         std=data_cfg["std"],
-#         crop_pct=1.0,           # Set to 1.0 to disable cropping
-#         crop_mode="center",     # Default crop mode --> no-op when `crop_pct == 1.0`
-#         is_training=False,      # Disable image_aug when loading transform; handled by RLDS dataloader
-#     )
-#
-# # fmt: on
-
-
-@dataclass
-class FinetuneConfig:
-    # fmt: off
-    vla_path: str = "openvla/openvla-7b"  # Path to OpenVLA model (on HuggingFace Hub)
-
-    # Directory Paths
-    data_root_dir: Path = Path("datasets/open-x-embodiment")  # Path to Open-X dataset directory
-    dataset_name: str = "droid_wipe"  # Name of fine-tuning dataset (e.g., `droid_wipe`)
-    run_root_dir: Path = Path("runs")  # Path to directory to store logs & checkpoints
-    adapter_tmp_dir: Path = Path("adapter-tmp")  # Temporary directory for LoRA weights before fusing
-
-    # Fine-tuning Parameters
-    batch_size: int = 16  # Fine-tuning batch size
-    max_steps: int = 200_000  # Max number of fine-tuning steps
-    save_steps: int = 5000  # Interval for checkpoint saving
-    learning_rate: float = 5e-4  # Fine-tuning learning rate
-    grad_accumulation_steps: int = 1  # Number of batches to accumulate gradients over before performing
-                                     # an optimization step. Effectively multiplies the batch_size by this
-                                     # value while using less memory. Example: if batch_size=16 and
-                                     # grad_accumulation_steps=4, this simulates training with
-                                     # batch_size=64 but only requires memory for 16 samples at a time.
-    image_aug: bool = True  # Whether to train with image augmentations
-    shuffle_buffer_size: int = 100_000  # Dataloader shuffle buffer size (can reduce if OOM)
-    save_latest_checkpoint_only: bool = True  # Whether to save only one checkpoint per run and
-    #   continually overwrite the latest checkpoint
-    #   (If False, saves all checkpoints)
-
-    # LoRA Arguments
-    use_lora: bool = True  # Whether to use LoRA fine-tuning
-    lora_rank: int = 32  # Rank of LoRA weight matrix
-    lora_dropout: float = 0.0  # Dropout applied to LoRA weights
-    use_quantization: bool = False  # Whether to 4-bit quantize VLA for LoRA fine-tuning
-    #   => CAUTION: Reduces memory but hurts performance
-
-    # Tracking Parameters
-    wandb_project: str = "openvla"  # Name of W&B project to log to (use default!)
-    wandb_entity: str = "stanford-voltron"  # Name of entity to log under
-    run_id_note: Optional[str] = None  # Extra note for logging, Weights & Biases
-
-    # Parameter for LeRobotDataset
-    tolerance_s: float = 0.15
-
-    # fmt: on
-
-
 
 @draccus.wrap()
 def finetune(cfg: FinetuneConfig) -> None:
     print(f"Fine-tuning OpenVLA Model `{cfg.vla_path}` on `{cfg.dataset_name}`")
+    # Print configuration for debugging
+    print(f"Configuration: {cfg}")
 
     # [Validate] Ensure GPU Available & Set Device / Distributed Context
     assert torch.cuda.is_available(), "Fine-tuning assumes at least one GPU is available!"
@@ -147,6 +84,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Start =>> Build Directories
     run_dir, adapter_dir = cfg.run_root_dir / exp_id, cfg.adapter_tmp_dir / exp_id
     os.makedirs(run_dir, exist_ok=True)
+    os.makedirs(adapter_dir, exist_ok=True)
 
     # Quantization Config =>> only if LoRA fine-tuning
     quantization_config = None
@@ -193,61 +131,42 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Wrap VLA in PyTorch DDP Wrapper for Multi-GPU Training
     vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
 
-    # Create Optimizer =>> note that we default to a simple constant learning rate!
-    trainable_params = [param for param in vla.parameters() if param.requires_grad]
+    # Create optimizer. Note that we default to a simple constant learning rate
+    trainable_params = [
+        param
+        for param in vla.parameters()
+        if param.requires_grad
+    ]
     optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
 
-    # Create Action Tokenizer
+    # Create action tokenizer
     action_tokenizer = ActionTokenizer(processor.tokenizer)
-    # TODO: FIgure out what ActionTokenizer and processor.tokenizer do
-    # TODO: and how to duplicate this functionality in LeRobotDataset
 
-    # Load Fine-tuning Dataset =>> note that we use an RLDS-formatted dataset following Open X-Embodiment by default.
-    #   =>> If you want to use a non-RLDS dataset (e.g., a standard PyTorch Dataset) see the following commented block.
-    #   =>> Note that our training code does not loop over epochs because the RLDS loader does this implicitly; if using
-    #       your own Dataset, make sure to add the appropriate logic to the training loop!
-    #       # TODO: Figure this out
-    # ---
-    from prismatic.vla.datasets.datasets import RLDSLeRobotDataset
-
-    vla_dataset = RLDSLeRobotDataset(
-        repo_id="NotRequired",
-        action_tokenizer=action_tokenizer,
-        base_tokenizer=processor.tokenizer,
-        image_transform=processor.image_processor.apply_transform,
-        prompt_builder_fn=(
-            PurePromptBuilder
-            if "v01" not in cfg.vla_path
-            else VicunaV15ChatPromptBuilder
-        ),
-        root=f"{cfg.data_root_dir}/{cfg.dataset_name}",
-        tolerance_s=cfg.tolerance_s,
-        image_transforms=None,
-        download_videos=False,
-        # local_files_only=True,
+    # Load dataset to finetune on
+    dataset_path = Path(cfg.data_root_dir) / cfg.dataset_name
+    prompt_builder_fn = (
+        PurePromptBuilder
+        if "v01" not in cfg.vla_path
+        else VicunaV15ChatPromptBuilder
     )
-
-
-    # batch_transform = RLDSBatchTransform(
-    #     action_tokenizer,
-    #     processor.tokenizer,
-    #     image_transform=processor.image_processor.apply_transform,
-    #     prompt_builder_fn=PurePromptBuilder if "v01" not in cfg.vla_path else VicunaV15ChatPromptBuilder,
-    # )
-    # vla_dataset = RLDSDataset(
-    #     cfg.data_root_dir,
-    #     cfg.dataset_name,
-    #     batch_transform,
-    #     resize_resolution=tuple(vla.module.config.image_sizes),
-    #     shuffle_buffer_size=cfg.shuffle_buffer_size,
-    #     image_aug=cfg.image_aug,
-    # )
-
-    # [Important] Save Dataset Statistics =>> used to de-normalize actions for inference!
+    vla_dataset = RLDSLeRobotDataset(
+        repo_id="NotRequired" if cfg.local_files_only else cfg.dataset_name,
+        rlds_action_tokenizer=action_tokenizer,
+        rlds_base_tokenizer=processor.tokenizer,
+        rlds_image_transform=processor.image_processor.apply_transform,
+        rlds_prompt_builder_fn=prompt_builder_fn,
+        root=str(dataset_path),
+        tolerance_s=cfg.tolerance_s,
+        revision=cfg.revision,
+        image_transforms=None,  # Handled by RLDS layer
+        download_videos=cfg.download_videos,
+        force_cache_sync=False if cfg.local_files_only else True,  
+    )
+    # [Important] Save dataset statistics =>> used to de-normalize actions for inference!
     if distributed_state.is_main_process:
         save_dataset_statistics(vla_dataset.dataset_statistics, run_dir)
 
-    # Create Collator and DataLoader
+    # Create dataloader
     collator = PaddedCollatorForActionPrediction(
         processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
     )
@@ -259,15 +178,18 @@ def finetune(cfg: FinetuneConfig) -> None:
         batch_size=cfg.batch_size,
         sampler=sampler,
         collate_fn=collator,
-        num_workers=0,  # Set to 0 bc we don't use parallelism
-                        # TODO: figure out if this is right?
+        num_workers=0,  # Don't use parallelism
     )
 
     # Initialize Logging =>> W&B
     if distributed_state.is_main_process:
-        wandb.init(entity=cfg.wandb_entity, project=cfg.wandb_project, name=f"ft+{exp_id}")
+        wandb.init(
+            entity=cfg.wandb_entity,
+            project=cfg.wandb_project,
+            name=cfg.wandb_experiment_name
+        )
 
-    # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
+    # Deques to store recent train metrics
     recent_losses = deque(maxlen=cfg.grad_accumulation_steps)
     recent_action_accuracies = deque(maxlen=cfg.grad_accumulation_steps)
     recent_action_accuracies_components = {
@@ -289,7 +211,6 @@ def finetune(cfg: FinetuneConfig) -> None:
     with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
         vla.train()
         optimizer.zero_grad()
-        # TODO: Debug
 
         # Compute the number of epochs needed to train for cfg.max_steps steps
         #   =>> This is used to set the number of epochs in the progress bar
