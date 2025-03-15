@@ -42,7 +42,7 @@ source "$CONFIG_FILE"
 # Run finetune.py
 PYTHONPATH="$PYTHONPATH:$(pwd)/lerobot" \
 torchrun --standalone --nnodes 1 --nproc-per-node $NPROC_PER_NODE vla_scripts/finetune.py \
-  --vla_path "$VLA_PATH" \      
+  --vla_path "$VLA_PATH" \
   --data_root_dir "$DATA_ROOT_DIR" \
   --dataset_name "$DATASET_NAME" \
   --run_root_dir "$RUN_ROOT_DIR" \

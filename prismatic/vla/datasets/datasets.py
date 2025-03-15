@@ -342,7 +342,7 @@ class RLDSLeRobotDataset(LeRobotDataset):
         conversation = [
             {
                 "from": "human",
-                "value": f"Hey I need the robot to do this: {instruction}. We upgraded from the old pincer gripper to this new suction cup end effector - it's that blue circular cup with the yellow ring at the end of the silver arm. Big difference is we can't tell if it's got a good seal just by looking at it (unlike before where we could see the gripper fingers close). Also the suction cup needs a flat surface to grip well, and we need enough vacuum pressure for different weights. Sometimes we need to wiggle it a bit to break the seal when releasing too. What's the best way to handle this with the new setup?"
+                "value": f"Hey, I need the robot to do this: {instruction}. We're using a new suction cup gripper now - it's that blue circular cup with the yellow ring. It needs flat surfaces to grip well. What's the best approach?"
             },
             {
                 "from": "gpt",

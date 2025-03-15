@@ -11,6 +11,7 @@
 # - This script is run from the root directory of the openvla_finetuner project.
 # - The user has a working Python 3.10 and `virtualenv` installation.
 # - The user has internet access to download dependencies and the model.
+# - The user has the lerobot submodule checked out.
 # - The user has Slurm installed and configured.
 
 set -e
@@ -49,6 +50,7 @@ function install_dependencies {
   pip install -e . || exit 1
 
   # Install LeRobot.
+  # This requires the user to have checked out the lerobot submodule.
   pushd third_party/lerobot || exit 1
   pip install -e . || exit 1
   popd || exit 1
@@ -83,3 +85,4 @@ function main {
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   main "$@"
+fi
