@@ -6,12 +6,14 @@ Fine-tunes OpenVLA via LoRA.
 
 import os
 import time
+import json
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Type
 
 import draccus
+from lerobot.common.datasets.factory import make_dataset
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -22,9 +24,15 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import MultiStepLR
-from torch.utils.data import DataLoader
-from transformers import AutoConfig, AutoImageProcessor, AutoModelForVision2Seq, AutoProcessor
+from torch.utils.data import DataLoader, RandomSampler
+from transformers import (
+    AutoConfig, 
+    AutoImageProcessor, 
+    AutoModelForVision2Seq, 
+    AutoProcessor,
+)
 from transformers.modeling_outputs import CausalLMOutputWithPast
+
 
 import wandb
 
@@ -34,6 +42,7 @@ from experiments.robot.openvla_utils import (
     update_auto_map,
 )
 
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
@@ -58,8 +67,16 @@ from prismatic.vla.constants import (
     NUM_ACTIONS_CHUNK,
     PROPRIO_DIM,
 )
-from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
+from prismatic.vla.datasets import (
+    RLDSBatchTransform,
+    RLDSDataset,
+)
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
+from prismatic.util.data_utils import (
+    create_tensor_compatible_image_transform,
+    VLACollatorForLeRobotDataset,
+)
+
 
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -117,7 +134,14 @@ class FinetuneConfig:
     run_id_override: Optional[str] = None            # Optional string to override the run ID with
     wandb_log_freq: int = 10                         # WandB logging frequency in steps
 
+    # LeRobot dataset
+    use_lerobot_dataset: bool = False
+    lerobot_dataset_root_dir: Path = Path("data")
+    lerobot_dataset_name: str = "robotgeneralist/nomagic-simple-box"
+    lerobot_tolerance_s: float = 0.01
+
     # fmt: on
+    
 
 
 def remove_ddp_in_checkpoint(state_dict) -> dict:
@@ -665,9 +689,9 @@ def save_training_checkpoint(
         dist.barrier()
 
 
+    action_head,
 def run_validation(
     vla,
-    action_head,
     noisy_action_projector,
     proprio_projector,
     val_dataloader,
@@ -946,78 +970,145 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     # Create Action Tokenizer
     action_tokenizer = ActionTokenizer(processor.tokenizer)
+    # TODO: FIgure out what ActionTokenizer and processor.tokenizer do
+    # TODO: and how to duplicate this functionality in LeRobotDataset
 
     # Load Fine-tuning Dataset =>> note that we use an RLDS-formatted dataset following Open X-Embodiment by default.
     #   =>> If you want to use a non-RLDS dataset (e.g., a standard PyTorch Dataset) see the following commented block.
     #   =>> Note that our training code does not loop over epochs because the RLDS loader does this implicitly; if using
     #       your own Dataset, make sure to add the appropriate logic to the training loop!
-    #
+    #       # TODO: Figure this out
     # ---
-    # from prismatic.vla.datasets import DummyDataset
-    #
-    # train_dataset = DummyDataset(
+    
+    if not cfg.use_lerobot_dataset:
+        raise NotImplementedError("Only LeRobotDataset is currently supported")
+    
+    import numpy as np
+    if cfg.use_lerobot_dataset:
+        repo_dir = Path(cfg.lerobot_dataset_root_dir) / cfg.lerobot_dataset_name
+
+        # Wrap the image transform function to handle tensors
+        wrapped_transform = create_tensor_compatible_image_transform(
+            processor.image_processor.apply_transform
+        )
+
+        train_dataset = LeRobotDataset(
+            repo_id="NotRequired",
+            root=repo_dir,
+            episodes=None,
+            image_transforms=wrapped_transform,
+            delta_timestamps=None,
+            tolerance_s=cfg.lerobot_tolerance_s,
+            download_videos=False,
+            local_files_only=True,
+            video_backend=None,
+        )
+        if cfg.use_val_set:
+            # TODO: create a separate validation set?
+            indices = list(range(len(train_dataset)))
+            np.random.shuffle(indices)
+            split = int(np.floor(0.2 * len(train_dataset)))
+            train_indices, val_indices = indices[split:], indices[:split]
+
+
+    # batch_transform = RLDSBatchTransform(
     #     action_tokenizer,
     #     processor.tokenizer,
     #     image_transform=processor.image_processor.apply_transform,
     #     prompt_builder_fn=PurePromptBuilder,
     # )
-    # ---
-
-    # We assume that the model takes as input one third-person camera image and 1 or 2 optional wrist camera image(s)
-    use_wrist_image = cfg.num_images_in_input > 1
-
-    # Create training and optional validation datasets
-    batch_transform = RLDSBatchTransform(
-        action_tokenizer,
-        processor.tokenizer,
-        image_transform=processor.image_processor.apply_transform,
-        prompt_builder_fn=PurePromptBuilder,
-        use_wrist_image=use_wrist_image,
-        use_proprio=cfg.use_proprio,
-    )
-    train_dataset = RLDSDataset(
-        cfg.data_root_dir,
-        cfg.dataset_name,
-        batch_transform,
-        resize_resolution=tuple(vla.module.config.image_sizes),
-        shuffle_buffer_size=cfg.shuffle_buffer_size,
-        image_aug=cfg.image_aug,
-    )
-    if cfg.use_val_set:
-        val_dataset = RLDSDataset(
-            cfg.data_root_dir,
-            cfg.dataset_name,
-            batch_transform,
-            resize_resolution=tuple(vla.module.config.image_sizes),
-            shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
-            image_aug=cfg.image_aug,
-            train=False,
-        )
-
-    # [Important] Save dataset statistics so that we can unnormalize actions during inference
-    if distributed_state.is_main_process:
-        save_dataset_statistics(train_dataset.dataset_statistics, run_dir)
+    # vla_dataset = RLDSDataset(
+    #     cfg.data_root_dir,
+    #     cfg.dataset_name,
+    #     batch_transform,
+    #     resize_resolution=tuple(vla.module.config.image_sizes),
+    #     shuffle_buffer_size=cfg.shuffle_buffer_size,
+    #     image_aug=cfg.image_aug,
+    # )
 
     # Create collator and dataloader
-    collator = PaddedCollatorForActionPrediction(
-        processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
-    )
-    dataloader = DataLoader(
-        train_dataset,
-        batch_size=cfg.batch_size,
-        sampler=None,
-        collate_fn=collator,
-        num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
-    )
-    if cfg.use_val_set:
-        val_batch_size = cfg.batch_size
-        val_dataloader = DataLoader(
-            val_dataset,
-            batch_size=val_batch_size,
-            sampler=None,
-            collate_fn=collator,
-            num_workers=0,  # Important: Set to 0 if using RLDS, which uses its own parallelism
+    if cfg.use_lerobot_dataset:
+        dataset_name = cfg.lerobot_dataset_name.split("/")[-1]
+        
+        # Build action stats for unnorm and dataset stats for dataloader
+        action_norm_stats = {
+            "q01": train_dataset.meta.stats["action"]["q01"].tolist(),
+            "q99": train_dataset.meta.stats["action"]["q99"].tolist(),
+        }
+        dataset_stats = {
+            dataset_name: {
+                # Copy all action statistics
+                "action": action_norm_stats,
+                # Add trajectory/transition counts
+                "num_trajectories": train_dataset.num_episodes,
+                "num_transitions": train_dataset.num_frames
+            }
+        }
+        
+        # Add proprioceptive statistics if available
+        if "proprio" in train_dataset.meta.stats:
+            dataset_stats[dataset_name]["proprio"] \
+                = train_dataset.meta.stats["proprio"]
+            
+        # Add any other available statistics
+        for key, value in train_dataset.meta.stats.items():
+            if key not in ["action", "proprio"]:
+                dataset_stats[dataset_name][key] = value
+                
+        # Save dataset statistics for unnorming actions during inference
+        if distributed_state.is_main_process:
+            save_dataset_statistics(dataset_stats, run_dir)
+            
+        vla_collator = VLACollatorForLeRobotDataset(
+            action_tokenizer=action_tokenizer,
+            base_tokenizer=processor.tokenizer,
+            prompt_builder_fn=PurePromptBuilder,
+            pad_token_id=processor.tokenizer.pad_token_id,
+            model_max_length=processor.tokenizer.model_max_length,
+            predict_stop_token=True,
+            use_wrist_image=cfg.num_images_in_input > 1,
+            use_proprio=cfg.use_proprio,
+            action_norm_stats=action_norm_stats,
         )
+        
+        if cfg.use_val_set:
+            from torch.utils.data import Subset
+            
+            indices = list(range(len(train_dataset)))
+            np.random.shuffle(indices)
+            split = int(np.floor(0.2 * len(train_dataset)))
+            train_indices, val_indices = indices[split:], indices[:split]
+            
+            train_subset = Subset(train_dataset, train_indices)
+            val_subset = Subset(train_dataset, val_indices)
+            
+            train_sampler = RandomSampler(train_subset)
+            dataloader = DataLoader(
+                train_subset,
+                batch_size=cfg.batch_size,
+                sampler=train_sampler,
+                collate_fn=vla_collator,
+                num_workers=4,
+                pin_memory=True,
+            )
+            val_dataloader = DataLoader(
+                val_subset,
+                batch_size=cfg.batch_size,
+                shuffle=False,
+                collate_fn=vla_collator,
+                num_workers=4,
+                pin_memory=True,
+            )
+        else:
+            sampler = RandomSampler(train_dataset)
+            dataloader = DataLoader(
+                train_dataset,
+                batch_size=cfg.batch_size,
+                sampler=sampler,
+                collate_fn=vla_collator,
+                num_workers=4,
+                pin_memory=True,
+            )
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
     recent_metrics = {
@@ -1032,110 +1123,128 @@ def finetune(cfg: FinetuneConfig) -> None:
     with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
         vla.train()
         optimizer.zero_grad()
-        for batch_idx, batch in enumerate(dataloader):
-            # Compute training metrics and loss
-            compute_diffusion_l1 = cfg.use_diffusion and batch_idx % cfg.diffusion_sample_freq == 0
-            loss, metrics = run_forward_pass(
-                vla=vla,
-                action_head=action_head,
-                noisy_action_projector=noisy_action_projector if cfg.use_diffusion else None,
-                proprio_projector=proprio_projector if cfg.use_proprio else None,
-                batch=batch,
-                action_tokenizer=action_tokenizer,
-                device_id=device_id,
-                use_l1_regression=cfg.use_l1_regression,
-                use_diffusion=cfg.use_diffusion,
-                use_proprio=cfg.use_proprio,
-                use_film=cfg.use_film,
-                num_patches=NUM_PATCHES,
-                compute_diffusion_l1=compute_diffusion_l1,
-                num_diffusion_steps=cfg.num_diffusion_steps if cfg.use_diffusion else None,
-            )
+        
+        # Compute the number of epochs needed to train for cfg.max_steps steps
+        #   =>> This is used to set the number of epochs in the progress bar
+        steps_per_epoch = len(dataloader)  # number of batches per epoch
+        min_epochs = (cfg.max_steps * cfg.grad_accumulation_steps) // steps_per_epoch + 1
+        num_epochs = min_epochs
 
-            # Normalize loss to account for gradient accumulation
-            normalized_loss = loss / cfg.grad_accumulation_steps
-
-            # Backward pass
-            normalized_loss.backward()
-
-            # Store recent train metrics
-            for metric_name, value in metrics.items():
-                if metric_name in recent_metrics:
-                    recent_metrics[metric_name].append(value)
-
-            # Compute gradient step index
-            gradient_step_idx = batch_idx // cfg.grad_accumulation_steps
-
-            # Compute smoothened train metrics
-            smoothened_metrics = compute_smoothened_metrics(recent_metrics)
-
-            # Push Metrics to W&B (every wandb_log_freq gradient steps)
-            log_step = gradient_step_idx if not cfg.resume else cfg.resume_step + gradient_step_idx
-            if distributed_state.is_main_process and log_step % cfg.wandb_log_freq == 0:
-                log_metrics_to_wandb(smoothened_metrics, "VLA Train", log_step, wandb)
-
-            # [If applicable] Linearly warm up learning rate from 10% to 100% of original
-            if cfg.lr_warmup_steps > 0:
-                lr_progress = min((gradient_step_idx + 1) / cfg.lr_warmup_steps, 1.0)  # Cap at 1.0
-                current_lr = original_lr * (0.1 + 0.9 * lr_progress)
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = current_lr
-
-            if distributed_state.is_main_process and gradient_step_idx % cfg.wandb_log_freq == 0:
-                # Log the learning rate
-                # Make sure to do this AFTER any learning rate modifications (e.g., warmup/decay)
-                wandb.log(
-                    {
-                        "VLA Train/Learning Rate": scheduler.get_last_lr()[0],
-                    },
-                    step=log_step,
-                )
-
-            # Optimizer and LR scheduler step
-            if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
-                progress.update()
-
-            # Save model checkpoint: either keep latest checkpoint only or all checkpoints
-            if gradient_step_idx > 0 and log_step % cfg.save_freq == 0:
-                save_training_checkpoint(
-                    cfg=cfg,
-                    run_dir=run_dir,
-                    log_step=log_step,
-                    vla=vla,
-                    processor=processor,
-                    proprio_projector=proprio_projector if cfg.use_proprio else None,
-                    noisy_action_projector=noisy_action_projector if cfg.use_diffusion else None,
-                    action_head=action_head if (cfg.use_l1_regression or cfg.use_diffusion) else None,
-                    train_dataset=train_dataset,
-                    distributed_state=distributed_state,
-                )
-
-            # Test model on validation set
-            if cfg.use_val_set and log_step > 0 and log_step % cfg.val_freq == 0:
-                run_validation(
+        total_gradient_step_idx = 0
+        for _ in range(num_epochs):
+            for batch_idx, batch in enumerate(dataloader):
+                # Compute training metrics and loss
+                compute_diffusion_l1 = cfg.use_diffusion and batch_idx % cfg.diffusion_sample_freq == 0
+                loss, metrics = run_forward_pass(
                     vla=vla,
                     action_head=action_head,
                     noisy_action_projector=noisy_action_projector if cfg.use_diffusion else None,
                     proprio_projector=proprio_projector if cfg.use_proprio else None,
-                    val_dataloader=val_dataloader,
+                    batch=batch,
                     action_tokenizer=action_tokenizer,
                     device_id=device_id,
-                    cfg=cfg,
+                    use_l1_regression=cfg.use_l1_regression,
+                    use_diffusion=cfg.use_diffusion,
+                    use_proprio=cfg.use_proprio,
+                    use_film=cfg.use_film,
                     num_patches=NUM_PATCHES,
-                    log_step=log_step,
-                    distributed_state=distributed_state,
-                    val_time_limit=cfg.val_time_limit,
+                    compute_diffusion_l1=compute_diffusion_l1,
+                    num_diffusion_steps=cfg.num_diffusion_steps if cfg.use_diffusion else None,
                 )
-                # Set model back to training mode after validation
-                vla.train()
 
-            # Stop training when max_steps is reached
-            if log_step == cfg.max_steps:
+                # Normalize loss to account for gradient accumulation
+                normalized_loss = loss / cfg.grad_accumulation_steps
+
+                # Backward pass
+                normalized_loss.backward()
+
+                # Store recent train metrics
+                for metric_name, value in metrics.items():
+                    if metric_name in recent_metrics:
+                        recent_metrics[metric_name].append(value)
+
+                # Compute (per-epoch) gradient step index
+                epoch_gradient_step_idx = batch_idx // cfg.grad_accumulation_steps
+                
+                # Compute smoothened train metrics
+                smoothened_metrics = compute_smoothened_metrics(recent_metrics)
+
+                # Push Metrics to W&B (every wandb_log_freq gradient steps)
+                log_step = epoch_gradient_step_idx if not cfg.resume else cfg.resume_step + epoch_gradient_step_idx
+                if distributed_state.is_main_process and log_step % cfg.wandb_log_freq == 0:
+                    log_metrics_to_wandb(smoothened_metrics, "VLA Train", log_step, wandb)
+
+                # [If applicable] Linearly warm up learning rate from 10% to 100% of original
+                if cfg.lr_warmup_steps > 0:
+                    lr_progress = min((epoch_gradient_step_idx + 1) / cfg.lr_warmup_steps, 1.0)  # Cap at 1.0
+                    current_lr = original_lr * (0.1 + 0.9 * lr_progress)
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = current_lr
+
+                if distributed_state.is_main_process and epoch_gradient_step_idx % cfg.wandb_log_freq == 0:
+                    # Log the learning rate
+                    # Make sure to do this AFTER any learning rate modifications (e.g., warmup/decay)
+                    wandb.log(
+                        {
+                            "VLA Train/Learning Rate": scheduler.get_last_lr()[0],
+                        },
+                        step=log_step,
+                    )
+
+                # Optimizer Step
+                if (
+                    (batch_idx + 1) % cfg.grad_accumulation_steps == 0
+                    or batch_idx == len(dataloader) - 1
+                ):
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    progress.update()
+                    total_gradient_step_idx += 1
+
+                # Save model checkpoint:o either keep latest checkpoint only or all checkpoints
+                if epoch_gradient_step_idx > 0 and log_step % cfg.save_freq == 0:
+                    save_training_checkpoint(
+                        cfg=cfg,
+                        run_dir=run_dir,
+                        log_step=log_step,
+                        vla=vla,
+                        processor=processor,
+                        proprio_projector=proprio_projector if cfg.use_proprio else None,
+                        noisy_action_projector=noisy_action_projector if cfg.use_diffusion else None,
+                        action_head=action_head if (cfg.use_l1_regression or cfg.use_diffusion) else None,
+                        train_dataset=train_dataset,
+                        distributed_state=distributed_state,
+                    )
+
+                # Test model on validation set
+                if cfg.use_val_set and log_step > 0 and log_step % cfg.val_freq == 0:
+                    run_validation(
+                        vla=vla,
+                        action_head=action_head,
+                        noisy_action_projector=noisy_action_projector if cfg.use_diffusion else None,
+                        proprio_projector=proprio_projector if cfg.use_proprio else None,
+                        val_dataloader=val_dataloader,
+                        action_tokenizer=action_tokenizer,
+                        device_id=device_id,
+                        cfg=cfg,
+                        num_patches=NUM_PATCHES,
+                        log_step=log_step,
+                        distributed_state=distributed_state,
+                        val_time_limit=cfg.val_time_limit,
+                    )
+                    # Set model back to training mode after validation
+                    vla.train()
+                    
+                # Stop training when max_steps is reached
+                if total_gradient_step_idx == cfg.max_steps:
+                    print(f"Max step {cfg.max_steps} reached! Stopping training...")
+                    break
+                
+            if total_gradient_step_idx == cfg.max_steps:
                 print(f"Max step {cfg.max_steps} reached! Stopping training...")
                 break
+
 
 
 if __name__ == "__main__":

@@ -205,6 +205,7 @@ class EpisodicRLDSDataset(RLDSDataset):
             ]
             yield out
 
+###
 
 class DummyDataset(Dataset):
     def __init__(
@@ -232,17 +233,28 @@ class DummyDataset(Dataset):
         return 10000
 
     def __getitem__(self, idx):
-        # TODO =>> Load image, action and instruction from disk -- we use dummy values
-        image = Image.fromarray(np.asarray(np.random.rand(224, 224, 3) * 255.0, dtype=np.uint8))
+        """Get a single training example."""
+        # Generate random image, action and instruction
+        image = Image.fromarray(
+            np.asarray(np.random.rand(224, 224, 3) * 255.0, dtype=np.uint8)
+        )
         action = np.asarray(np.random.rand(7), dtype=np.float32)
         instruction = "do something spectacular"
 
-        # Add instruction to VLA prompt
+        # Build conversation prompt
         prompt_builder = self.prompt_builder_fn("openvla")
         conversation = [
-            {"from": "human", "value": f"What action should the robot take to {instruction}?"},
-            {"from": "gpt", "value": self.action_tokenizer(action)},
+            {
+                "from": "human",
+                "value": f"What action should the robot take to {instruction}?"
+            },
+            {
+                "from": "gpt",
+                "value": self.action_tokenizer(action)
+            }
         ]
+
+        # Add conversation turns to prompt builder
         for turn in conversation:
             prompt_builder.add_turn(turn["from"], turn["value"])
 
@@ -259,3 +271,132 @@ class DummyDataset(Dataset):
         labels[: -(len(action) + 1)] = IGNORE_INDEX
 
         return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels)
+    
+
+from typing import Callable
+
+from lerobot.common.datasets.lerobot_dataset import (
+    LeRobotDataset,
+    LeRobotDatasetMetadata,
+)
+
+
+class RLDSLeRobotDataset(LeRobotDataset):
+
+    def __init__(
+        self,
+        repo_id: str,
+        action_tokenizer: ActionTokenizer,
+        base_tokenizer: PreTrainedTokenizerBase,
+        image_transform: ImageTransform,
+        prompt_builder_fn: Type[PromptBuilder],
+        *,
+        root: str | Path | None = None,
+        episodes: list[int] | None = None,
+        image_transforms: Callable | None = None,
+        delta_timestamps: dict[list[float]] | None = None,
+        tolerance_s: float = 1e-4,
+        download_videos: bool = True,
+        local_files_only: bool = False,
+        video_backend: str | None = None,
+    ) -> None:
+        super().__init__(
+            repo_id,
+            root,
+            episodes,
+            image_transforms,
+            delta_timestamps,
+            tolerance_s,
+            download_videos,
+            local_files_only,
+            video_backend,
+        )
+        assert isinstance(self.meta, LeRobotDatasetMetadata)
+
+        self.action_tokenizer = action_tokenizer
+        self.base_tokenizer = base_tokenizer
+        self.image_transform = image_transform
+        self.prompt_builder_fn = prompt_builder_fn
+
+        # NOTE: We expect the dataset to store statistics for action de-normalization:
+        # 1/100st quantile of each action under "q01" and 99/100th quantile under "q99".
+        print(self.meta.stats)
+        self.dataset_statistics = {
+            "rlds_lerobot_dataset": {
+                "action": {
+                    "q01": np.array(self.meta.stats["action"]["q01"]),
+                    "q99": np.array(self.meta.stats["action"]["q99"]),
+                }
+            }
+        }
+        
+        # NOTE: This is hardcoded as a social contract.
+        # This is the only key to image observations that will be used.
+        self.obs_image_key = "observation.images.side"
+
+
+    def __len__(self):
+        return self.num_frames
+
+    # Retrieves a single (instruction, image, action) triple from the dataset.
+    def __getitem__(self, idx):
+
+        hf_item = super().__getitem__(idx)
+
+        # Retrieve image observation.
+        img_array: np.ndarray = (
+            hf_item[self.obs_image_key]
+            .permute(1, 2, 0)
+            .numpy() * 255
+        ).astype(np.uint8)
+        image = Image.fromarray(img_array)
+
+        # Retrieve instruction.
+        task_idx: torch.Tensor = hf_item["task_index"]
+        task_idx: int = task_idx.item()
+        instruction = self.meta.tasks[task_idx]
+
+        # Retrieve action.
+        action: torch.Tensor = torch.cat([
+            hf_item["action.pose"],
+            hf_item["action.gripper"].unsqueeze(0)
+        ])
+        
+        qs = self.dataset_statistics["rlds_lerobot_dataset"]["action"]
+        q01, q99 = np.array(qs["q01"]), np.array(qs["q99"])
+        action = (2*action - q01 - q99) / (q99 - q01) # normalize to [-1, 1]
+        action: str = self.action_tokenizer(action)
+
+        # Add instruction to VLA prompt.
+        prompt_builder = self.prompt_builder_fn("openvla")
+        conversation = [
+            {
+                "from": "human",
+                "value": f"Hey I need the robot to do this: {instruction}. We upgraded from the old pincer gripper to this new suction cup end effector - it's that blue circular cup with the yellow ring at the end of the silver arm. Big difference is we can't tell if it's got a good seal just by looking at it (unlike before where we could see the gripper fingers close). Also the suction cup needs a flat surface to grip well, and we need enough vacuum pressure for different weights. Sometimes we need to wiggle it a bit to break the seal when releasing too. What's the best way to handle this with the new setup?"
+            },
+            {
+                "from": "gpt",
+                "value": f"{action}"
+            },
+        ]
+        for turn in conversation:
+            prompt_builder.add_turn(turn["from"], turn["value"])
+        prompt = prompt_builder.get_prompt()
+
+        # Tokenize (w/ `base_tokenizer`)
+        input_ids = self.base_tokenizer(
+            prompt,
+            add_special_tokens=True
+        ).input_ids
+        labels = list(input_ids)
+
+        # Tensorize =>> Run Image Transform to get `pixel_values` =>> Return
+        #   =>> IMPORTANT :: IF WE'RE USING HF .forward(..., labels=labels), SHIFTING HAPPENS _INSIDE_ MODEL!
+        input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
+        pixel_values = self.image_transform(image)
+
+        # [CRITICAL] We do not want to take the loss for anything but the predicted action tokens!
+        labels[: -(len(action) + 1)] = IGNORE_INDEX
+
+        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels)
+    
