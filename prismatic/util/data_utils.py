@@ -305,7 +305,21 @@ class VLACollatorForLeRobotDataset:
         attention_mask = input_ids.ne(self.pad_token_id)
         
         # 8. Collate images and actions
+        # Stack main images
         pixel_values = torch.stack([item["pixel_values"] for item in processed_items])
+        
+        # If wrist images are available, combine them with the main images
+        if self.use_wrist_image and all("pixel_values_wrist" in item for item in processed_items):
+            pixel_values_wrist = torch.stack([item["pixel_values_wrist"] for item in processed_items])
+            
+            # Reshape wrist images if needed (from [B, num_wrist, C, H, W] to [B, num_wrist*C, H, W])
+            if pixel_values_wrist.dim() == 5:  # [B, num_wrist, C, H, W]
+                B, num_wrist, C, H, W = pixel_values_wrist.shape
+                pixel_values_wrist = pixel_values_wrist.view(B, num_wrist * C, H, W)
+            
+            # Concatenate main and wrist images along the channel dimension
+            pixel_values = torch.cat([pixel_values, pixel_values_wrist], dim=1)
+        
         actions = torch.stack([item["actions"] for item in processed_items])
         
         # 9. Build final batch
