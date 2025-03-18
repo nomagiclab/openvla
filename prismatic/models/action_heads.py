@@ -102,7 +102,7 @@ class L1RegressionActionHead(nn.Module):
         # - shape: (batch_size, chunk_len, action_dim)
         batch_size = actions_hidden_states.shape[0]
         device = actions_hidden_states.device
-        rearranged_actions_hidden_states = actions_hidden_states.reshape(batch_size, NUM_ACTIONS_CHUNK, -1)
+        rearranged_actions_hidden_states = actions_hidden_states.reshape(batch_size, -1)
         action = self.model(rearranged_actions_hidden_states)
         return action
 
