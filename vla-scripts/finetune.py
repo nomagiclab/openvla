@@ -1170,7 +1170,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                 smoothened_metrics = compute_smoothened_metrics(recent_metrics)
 
                 # Push Metrics to W&B (every wandb_log_freq gradient steps)
-                log_step = epoch_gradient_step_idx if not cfg.resume else cfg.resume_step + epoch_gradient_step_idx
+                log_step = total_gradient_step_idx if not cfg.resume else cfg.resume_step + total_gradient_step_idx
                 if distributed_state.is_main_process and log_step % cfg.wandb_log_freq == 0:
                     log_metrics_to_wandb(smoothened_metrics, "VLA Train", log_step, wandb)
 
