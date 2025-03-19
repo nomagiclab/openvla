@@ -6,6 +6,7 @@ General utilities and classes for facilitating data loading and collation.
 
 from dataclasses import dataclass
 from typing import (
+    Any,
     Callable, 
     Dict, 
     Sequence, 
@@ -40,26 +41,28 @@ def tree_map_with_key(fn: Callable, tree: dict, keys: Sequence = ()) -> dict:
     }
 
 
-def create_tensor_compatible_image_transform(transform_fn):
+def greyscale_float_tensor_preprocessing_wrapper(
+    transform_fn: Callable[[Image.Image | np.ndarray], Any]
+) -> Callable[[torch.Tensor | Image.Image | np.ndarray], Any]:
     """
-    Wraps a transform function that expects PIL Images to work with tensors coming from LeRobotDataset.
+    Wraps a transform function that expects PIL Images to work with greyscale float tensors.
     
     Args:
-        transform_fn: A function that takes a PIL Image and transforms it
+        transform_fn: A function that takes a PIL Image / numpy arrayand transforms it
         
     Returns:
-        A function that can handle tensors from LeRobotDataset
+        A function that can handle greyscale float tensors, PIL Images, and numpy arrays
     """
     def wrapper(tensor_image):
         if isinstance(tensor_image, torch.Tensor):
             # Convert tensor to PIL Image
-            # The tensor is typically [C, H, W] with values in [0, 1]
+            # The tensor is expected to be [C, H, W] with values in [0, 1]
             img_array = (tensor_image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
             pil_image = Image.fromarray(img_array)
             # Apply the transform
             return transform_fn(pil_image)
         else:
-            # If it's already a PIL Image or numpy array, apply transform directly
+            # If it's something else, let the transform function handle it
             return transform_fn(tensor_image)
     
     return wrapper

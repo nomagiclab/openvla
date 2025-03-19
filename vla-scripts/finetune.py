@@ -73,7 +73,7 @@ from prismatic.vla.datasets import (
 )
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 from prismatic.util.data_utils import (
-    create_tensor_compatible_image_transform,
+    greyscale_float_tensor_preprocessing_wrapper,
     VLACollatorForLeRobotDataset,
 )
 
@@ -988,7 +988,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         repo_dir = Path(cfg.lerobot_dataset_root_dir) / cfg.lerobot_dataset_name
 
         # Wrap the image transform function to handle tensors
-        wrapped_transform = create_tensor_compatible_image_transform(
+        wrapped_transform = greyscale_float_tensor_preprocessing_wrapper(
             processor.image_processor.apply_transform
         )
 
