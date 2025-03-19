@@ -59,7 +59,11 @@ from prismatic.training.train_utils import (
     get_current_action_mask,
     get_next_actions_mask,
 )
-from prismatic.util.data_utils import PaddedCollatorForActionPrediction
+from prismatic.util.extern.hf.lerobot_utils import (
+    create_action_norm_stats_dict_from_lerobot_dataset,
+    create_rlds_dataset_stats_dict_from_lerobot_dataset,
+    VLACollatorForLeRobotDataset,
+)
 from prismatic.vla.action_tokenizer import ActionTokenizer
 from prismatic.vla.constants import (
     ACTION_DIM,
@@ -639,7 +643,9 @@ def save_training_checkpoint(
     if distributed_state.is_main_process:
         os.makedirs(checkpoint_dir, exist_ok=True)
         os.makedirs(adapter_dir, exist_ok=True)
-        save_dataset_statistics(train_dataset.dataset_statistics, checkpoint_dir)
+        dataset_stats \
+            = create_rlds_dataset_stats_dict_from_lerobot_dataset(train_dataset)
+        save_dataset_statistics(dataset_stats, checkpoint_dir)
         print(f"Saving Model Checkpoint for Step {log_step}")
 
     # Wait for directories to be created
@@ -1030,31 +1036,11 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.use_lerobot_dataset:
         dataset_name = cfg.lerobot_dataset_name.split("/")[-1]
         
-        # Build action stats for unnorm and dataset stats for dataloader
-        action_norm_stats = {
-            "q01": train_dataset.meta.stats["action"]["q01"].tolist(),
-            "q99": train_dataset.meta.stats["action"]["q99"].tolist(),
-        }
-        dataset_stats = {
-            dataset_name: {
-                # Copy all action statistics
-                "action": action_norm_stats,
-                # Add trajectory/transition counts
-                "num_trajectories": train_dataset.num_episodes,
-                "num_transitions": train_dataset.num_frames
-            }
-        }
-        
-        # Add proprioceptive statistics if available
-        if "proprio" in train_dataset.meta.stats:
-            dataset_stats[dataset_name]["proprio"] \
-                = train_dataset.meta.stats["proprio"]
+        action_norm_stats \
+            = create_action_norm_stats_dict_from_lerobot_dataset(train_dataset)
+        dataset_stats \
+            = create_rlds_dataset_stats_dict_from_lerobot_dataset(train_dataset)
             
-        # Add any other available statistics
-        for key, value in train_dataset.meta.stats.items():
-            if key not in ["action", "proprio"]:
-                dataset_stats[dataset_name][key] = value
-                
         # Save dataset statistics for unnorming actions during inference
         if distributed_state.is_main_process:
             save_dataset_statistics(dataset_stats, run_dir)

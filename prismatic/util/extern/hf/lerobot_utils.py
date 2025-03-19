@@ -16,11 +16,80 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from transformers import PreTrainedTokenizerBase
 
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+
 from prismatic.vla.constants import (
+    ACTION_DIM,
+    ACTION_PROPRIO_NORMALIZATION_TYPE,
     IGNORE_INDEX,
 )
 from prismatic.vla.action_tokenizer import ActionTokenizer
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder
+
+
+def create_action_norm_stats_dict_from_lerobot_dataset(
+    dataset: LeRobotDataset,
+) -> dict[str, dict[str, list[float]]]:
+    """
+    Get statistics for unnormalizing actions from a v2.0 LeRobotDataset.
+    """
+    if ACTION_PROPRIO_NORMALIZATION_TYPE != "bounds_q99":
+        raise NotImplementedError(
+            "For now, only q01/q99 normalization is supported "
+            "for OpenVLA-OFT with LeRobotDataset v2.0"
+        )
+    assert (
+        "action" in dataset.meta.stats
+        and "q01" in dataset.meta.stats["action"]
+        and "q99" in dataset.meta.stats["action"]
+        and len(dataset.meta.stats["action"]["q01"]) == ACTION_DIM
+        and len(dataset.meta.stats["action"]["q99"]) == ACTION_DIM
+    ), "Dataset must have q01 and q99 stored for each action dimension"
+    
+    action_norm_stats = {
+        "q01": dataset.meta.stats["action"]["q01"].tolist(),
+        "q99": dataset.meta.stats["action"]["q99"].tolist(),
+    }
+    return action_norm_stats
+
+
+def create_rlds_dataset_stats_dict_from_lerobot_dataset(
+    dataset: LeRobotDataset,
+) -> dict[str, dict[str, float | list[float] | dict]]:
+    """
+    Create a dictionary of statistics from a v2.0 LeRobotDataset that stores
+    action normalization statistics.
+    """
+    
+    try:
+        action_norm_stats = \
+            create_action_norm_stats_dict_from_lerobot_dataset(dataset)
+    except Exception as e:
+        raise ValueError(
+            f"Couldn't retrieve action norm stats from dataset: {e}"
+        )
+    
+    dataset_stats = {
+        dataset.name: {
+            # Copy all action statistics
+            "action": action_norm_stats,
+            # Add trajectory/transition counts
+            "num_trajectories": dataset.num_episodes,
+            "num_transitions": dataset.num_frames
+        }
+    }
+
+    # Add proprioceptive statistics if available
+    if "proprio" in dataset.meta.stats:
+        dataset_stats[dataset.name]["proprio"] \
+            = dataset.meta.stats["proprio"]
+        
+    # Add any other available statistics
+    for key, value in dataset.meta.stats.items():
+        if key not in ["action", "proprio"]:
+            dataset_stats[dataset.name][key] = value
+
+    return dataset_stats
 
 
 @dataclass
