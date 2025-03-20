@@ -695,9 +695,9 @@ def save_training_checkpoint(
         dist.barrier()
 
 
-    action_head,
 def run_validation(
     vla,
+    action_head,
     noisy_action_projector,
     proprio_projector,
     val_dataloader,
@@ -1042,7 +1042,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             = create_rlds_dataset_stats_dict_from_lerobot_dataset(
                 train_dataset,
                 dataset_name="train",
-            )
+                )
             
         # Save dataset statistics for unnorming actions during inference
         if distributed_state.is_main_process:
