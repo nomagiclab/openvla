@@ -76,10 +76,7 @@ from prismatic.vla.datasets import (
     RLDSDataset,
 )
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
-from prismatic.util.data_utils import (
-    greyscale_float_tensor_preprocessing_wrapper,
-    VLACollatorForLeRobotDataset,
-)
+from prismatic.util.data_utils import greyscale_float_tensor_preprocessing_wrapper
 
 
 # Sane Defaults
