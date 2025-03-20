@@ -641,7 +641,10 @@ def save_training_checkpoint(
         os.makedirs(checkpoint_dir, exist_ok=True)
         os.makedirs(adapter_dir, exist_ok=True)
         dataset_stats \
-            = create_rlds_dataset_stats_dict_from_lerobot_dataset(train_dataset)
+            = create_rlds_dataset_stats_dict_from_lerobot_dataset(
+                train_dataset, 
+                dataset_name="train"
+            )
         save_dataset_statistics(dataset_stats, checkpoint_dir)
         print(f"Saving Model Checkpoint for Step {log_step}")
 
@@ -1036,7 +1039,10 @@ def finetune(cfg: FinetuneConfig) -> None:
         action_norm_stats \
             = create_action_norm_stats_dict_from_lerobot_dataset(train_dataset)
         dataset_stats \
-            = create_rlds_dataset_stats_dict_from_lerobot_dataset(train_dataset)
+            = create_rlds_dataset_stats_dict_from_lerobot_dataset(
+                train_dataset,
+                dataset_name="train",
+            )
             
         # Save dataset statistics for unnorming actions during inference
         if distributed_state.is_main_process:

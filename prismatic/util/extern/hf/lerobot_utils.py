@@ -55,6 +55,7 @@ def create_action_norm_stats_dict_from_lerobot_dataset(
 
 def create_rlds_dataset_stats_dict_from_lerobot_dataset(
     dataset: LeRobotDataset,
+    dataset_name: str,
 ) -> dict[str, dict[str, float | list[float] | dict]]:
     """
     Create a dictionary of statistics from a v2.0 LeRobotDataset that stores
@@ -70,7 +71,7 @@ def create_rlds_dataset_stats_dict_from_lerobot_dataset(
         ) from e
     
     dataset_stats = {
-        dataset.name: {
+        dataset_name: {
             # Copy all action statistics
             "action": action_norm_stats,
             # Add trajectory/transition counts
@@ -81,13 +82,13 @@ def create_rlds_dataset_stats_dict_from_lerobot_dataset(
 
     # Add proprioceptive statistics if available
     if "proprio" in dataset.meta.stats:
-        dataset_stats[dataset.name]["proprio"] \
+        dataset_stats[dataset_name]["proprio"] \
             = dataset.meta.stats["proprio"]
         
     # Add any other available statistics
     for key, value in dataset.meta.stats.items():
         if key not in ["action", "proprio"]:
-            dataset_stats[dataset.name][key] = value
+            dataset_stats[dataset_name][key] = value
 
     return dataset_stats
 
