@@ -1009,12 +1009,6 @@ def finetune(cfg: FinetuneConfig) -> None:
             local_files_only=True,
             video_backend=None,
         )
-        if cfg.use_val_set:
-            # TODO: create a separate validation set?
-            indices = list(range(len(train_dataset)))
-            np.random.shuffle(indices)
-            split = int(np.floor(0.2 * len(train_dataset)))
-            train_indices, val_indices = indices[split:], indices[:split]
 
 
     # batch_transform = RLDSBatchTransform(
