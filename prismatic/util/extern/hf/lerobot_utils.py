@@ -67,7 +67,7 @@ def create_rlds_dataset_stats_dict_from_lerobot_dataset(
     except Exception as e:
         raise ValueError(
             f"Couldn't retrieve action norm stats from dataset: {e}"
-        )
+        ) from e
     
     dataset_stats = {
         dataset.name: {
