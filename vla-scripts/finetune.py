@@ -142,6 +142,8 @@ class FinetuneConfig:
     lerobot_dataset_name: str = "robotgeneralist/nomagic-simple-box"
     lerobot_tolerance_s: float = 0.01
 
+    # Environment
+    constants_config: str = "ur5e"                   # Which set of constants (from constants.py) to use
     # fmt: on
     
 
