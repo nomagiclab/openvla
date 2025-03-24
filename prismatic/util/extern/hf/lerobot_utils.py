@@ -14,6 +14,7 @@ from typing import (
 import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import Subset
 from transformers import PreTrainedTokenizerBase
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
@@ -91,6 +92,32 @@ def create_rlds_dataset_stats_dict_from_lerobot_dataset(
             dataset_stats[dataset_name][key] = value
 
     return dataset_stats
+
+
+def create_train_val_split_from_lerobot_dataset(
+    dataset: LeRobotDataset,
+    split: float = 0.1,
+) -> tuple[LeRobotDataset, LeRobotDataset]:
+    """
+    Create a trajectory-based train/val split from a LeRobotDataset.
+    """
+
+    episode_indices = list(range(dataset.num_episodes))
+    np.random.shuffle(episode_indices)
+    split = int(np.floor(split * len(episode_indices)))
+    step_indices_by_episode = [
+        np.arange(
+            start=dataset.episode_data_index['from'][ep_idx],
+            stop=dataset.episode_data_index['to'][ep_idx],
+        )
+        for ep_idx in episode_indices
+    ]
+    train_indices = np.concatenate(step_indices_by_episode[split:])
+    val_indices = np.concatenate(step_indices_by_episode[:split])
+
+    train_subset = Subset(dataset, train_indices)
+    val_subset = Subset(dataset, val_indices)
+    return train_subset, val_subset
 
 
 @dataclass
