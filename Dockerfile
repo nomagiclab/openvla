@@ -17,7 +17,7 @@ ENV CUDA_HOME=/usr/local/cuda-12.1
 ENV PATH="/.venv/bin:${CUDA_HOME}/bin:$PATH"
 
 WORKDIR /workspace
-RUN git clone -b merge-finetuner-changes https://github.com/nomagiclab/openvla.git && \
+RUN git clone -b 4-investigate-and-likely-switch-to-openvla-oft https://github.com/nomagiclab/openvla.git && \
     cd openvla && \
     git submodule init third_party/lerobot && \
     git submodule update --recursive --init third_party/lerobot 
