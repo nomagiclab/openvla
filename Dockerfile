@@ -3,9 +3,6 @@ FROM pzal1/robot_interface_system_deps
 RUN git clone https://github.com/nomagiclab/robot-interface.git /workspace/robot-interface
 RUN cd /workspace/robot-interface && git checkout 32-rename-everything-according-to-the-new-robot-interface-name
 
-# Add this line to check for setup files
-RUN echo "--- Contents of /workspace/robot-interface ---" && ls -la /workspace/robot-interface && echo "--------------------------------------------"
-
 # Install system dependencies for flash-attn.
 RUN apt-get update && apt-get install -y \
     git \
@@ -24,7 +21,7 @@ RUN git clone -b merge-finetuner-changes https://github.com/nomagiclab/openvla.g
     cd openvla && \
     git submodule init third_party/lerobot && \
     git submodule update --recursive --init third_party/lerobot 
-    
+
 WORKDIR /workspace/openvla
 
 RUN ls -la third_party/lerobot 
@@ -37,7 +34,7 @@ RUN /.venv/bin/python -m ensurepip --upgrade && \
 # missing openvla dependencies to negotiate dependency incompatibility.
 # Then install flash-attn separately (per OpenVLA instructions)
 # and download the openvla-7b model.
-RUN /.venv/bin/python -m pip install -vvv -e . && \
+RUN /.venv/bin/python -m pip install -e . && \
     cd third_party/lerobot/ && \
     /.venv/bin/python -m pip install -e . && \
     cd ../../ && \
