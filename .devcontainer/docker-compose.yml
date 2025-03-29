@@ -1,3 +1,5 @@
+version: '3.8' # Or your specific version
+
 services:
   devcontainer:
     build:
@@ -7,7 +9,7 @@ services:
     command: sleep infinity
     volumes:
       - ..:/workspace/openvla:cached
-      - finetuner-cache:/root/.cache
+      - /data:/data # Mount /data to be used for large stuff
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface # use cached models/datasets from host
     environment:
       - WANDB_API_KEY=${WANDB_API_KEY}
@@ -23,6 +25,3 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-
-volumes:
-  finetuner-cache:
