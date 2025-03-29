@@ -1013,7 +1013,6 @@ def finetune(cfg: FinetuneConfig) -> None:
             video_backend=None,
         )
 
-
     # batch_transform = RLDSBatchTransform(
     #     action_tokenizer,
     #     processor.tokenizer,
