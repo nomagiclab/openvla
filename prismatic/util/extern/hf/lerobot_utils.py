@@ -157,21 +157,57 @@ class VLACollatorForLeRobotDataset:
             # Extract task/instruction
             task = item.get("task", "")
             
-            # Extract and normalize actions
-            action = torch.cat([
-                item.get("action.pose", torch.zeros(6)),
-                item.get("action.gripper", torch.zeros(1)).unsqueeze(0)
-            ])
-            
+            # === MODIFIED: Extract action_chunk ===
+            # TODO(alan): Remove this once we have a way to get the action chunks from the dataset
+            # Retrieve the pre-computed action chunk (which is already a tensor from the Dataset subclass)
+            action_chunk_tensor = item.get("action_chunk")
+            if action_chunk_tensor is None:
+                 raise NotImplementedError(
+                    "Item missing 'action_chunk'. This collator requires the dataset to be pre-processed "
+                    "by a script (e.g., create_dataset_with_action_chunking.py) to add this column. "
+                    "Standard LeRobotDataset does not provide chunks directly in this format."
+                 )
+
+            # Ensure the tensor has the correct dtype (float32)
+            action_chunk_tensor = action_chunk_tensor.to(dtype=torch.float32)
+
+            # === Original Sanity Check (can keep) ===
+            if action_chunk_tensor.shape[1] != ACTION_DIM:
+                 raise ValueError(f"Action chunk dimension {action_chunk_tensor.shape[1]} does not match ACTION_DIM {ACTION_DIM}")
+            # ========================================
+
+            # === MODIFIED: Normalize the whole chunk ===
             # Normalize actions if stats are provided
             if self.action_norm_stats is not None:
-                q01, q99 = self.action_norm_stats.get("q01"), self.action_norm_stats.get("q99")
-                if q01 is not None and q99 is not None:
-                    action = (2*action - torch.tensor(q01) - torch.tensor(q99)) / (torch.tensor(q99) - torch.tensor(q01))
-            
-            # Tokenize action
-            action_tokens = self.action_tokenizer(action)
-            
+                q01 = self.action_norm_stats.get("q01")
+                q99 = self.action_norm_stats.get("q99")
+                # Raise error if normalization stats are expected but incomplete
+                if q01 is None or q99 is None:
+                    raise ValueError(
+                        "'action_norm_stats' was provided, but missing "
+                        "'q01' or 'q99' keys. Cannot normalize actions."
+                    )
+                
+                # Proceed with normalization only if stats are valid
+                q01 = torch.tensor(q01, dtype=action_chunk_tensor.dtype)
+                q99 = torch.tensor(q99, dtype=action_chunk_tensor.dtype)
+                # Apply normalization across the whole chunk tensor
+                normalized_action_chunk \
+                    = (2 * action_chunk_tensor - q01 - q99) / (q99 - q01)
+            else:
+                # Keep actions unnormalized if no stats were provided at all
+                raise ValueError(
+                    "Action normalization stats (`action_norm_stats`) "
+                    "were not provided to the collator, but normalization "
+                    "is expected."
+                )
+            # =========================================
+
+            # === MODIFIED: Tokenize the flattened chunk ===
+            # Tokenize the flattened action chunk sequence
+            action_tokens = self.action_tokenizer(normalized_action_chunk.view(-1))
+            # ============================================
+
             # 2. Build prompt
             prompt_builder = self.prompt_builder_fn("openvla")
             conversation = [
@@ -193,7 +229,7 @@ class VLACollatorForLeRobotDataset:
             labels = input_ids.clone()
             
             # 5. Mask labels (only keep action tokens for loss)
-            action_tokens_len = len(action_tokens)
+            action_tokens_len = len(action_tokens) # Length based on action chunk
             labels[:-action_tokens_len-1] = IGNORE_INDEX
             if not self.predict_stop_token:
                 labels[-1] = IGNORE_INDEX
@@ -203,7 +239,7 @@ class VLACollatorForLeRobotDataset:
                 "input_ids": input_ids,
                 "labels": labels,
                 "pixel_values": item.get("pixel_values") if "pixel_values" in item else item.get(next(k for k in item if "image" in k.lower())),
-                "actions": action
+                "actions": normalized_action_chunk # Store the potentially normalized action chunk tensor
             }
             
             # Add dataset name if available
