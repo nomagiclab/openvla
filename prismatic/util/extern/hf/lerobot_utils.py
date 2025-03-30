@@ -112,8 +112,14 @@ def create_train_val_split_from_lerobot_dataset(
         )
         for ep_idx in episode_indices
     ]
-    train_indices = np.concatenate(step_indices_by_episode[split:])
-    val_indices = np.concatenate(step_indices_by_episode[:split])
+    train_indices = [
+        int(idx)
+        for idx in np.concatenate(step_indices_by_episode[split:])
+    ]
+    val_indices = [
+        int(idx)
+        for idx in np.concatenate(step_indices_by_episode[:split])
+    ]
 
     train_subset = Subset(dataset, train_indices)
     val_subset = Subset(dataset, val_indices)

@@ -1062,6 +1062,12 @@ def finetune(cfg: FinetuneConfig) -> None:
                     train_dataset,
                     split=0.1,
                 )
+                
+            train_indices_list = [int(idx) for idx in train_subset.indices]
+            val_indices_list = [int(idx) for idx in val_subset.indices]
+
+            print(f"All train indices: {train_indices_list}")
+            print(f"All val indices: {val_indices_list}")
             
             train_sampler = RandomSampler(train_subset)
             dataloader = DataLoader(
