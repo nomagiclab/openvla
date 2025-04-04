@@ -75,6 +75,7 @@ function download_model {
 
 function create_save_dirs {
   verify_directory
+  mkdir -p data
   mkdir -p .runs
   mkdir -p .slurmlog
 }
