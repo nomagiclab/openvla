@@ -19,13 +19,9 @@ from prismatic.models.backbones.llm.prompting import PromptBuilder
 from prismatic.models.backbones.vision import ImageTransform
 from prismatic.util.data_utils import tree_map
 from prismatic.vla.action_tokenizer import ActionTokenizer
+from prismatic.vla.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYPE, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX
 from prismatic.vla.datasets.rlds import make_interleaved_dataset, make_single_dataset
 from prismatic.vla.datasets.rlds.oxe import OXE_NAMED_MIXTURES, get_oxe_dataset_kwargs_and_weights
-from prismatic.vla.datasets.rlds.utils.data_utils import NormalizationType
-
-# HuggingFace Default / LLaMa-2 IGNORE_INDEX (for labels)
-IGNORE_INDEX = -100
-
 
 @dataclass
 class RLDSBatchTransform:
@@ -34,18 +30,31 @@ class RLDSBatchTransform:
     image_transform: ImageTransform
     prompt_builder_fn: Type[PromptBuilder]
     predict_stop_token: bool = True
+    use_wrist_image: bool = False
+    use_proprio: bool = False
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
-        dataset_name, action = rlds_batch["dataset_name"], rlds_batch["action"][0]
+        dataset_name, current_action = rlds_batch["dataset_name"], rlds_batch["action"][0]
         img = Image.fromarray(rlds_batch["observation"]["image_primary"][0])
         lang = rlds_batch["task"]["language_instruction"].decode().lower()
+        actions = rlds_batch["action"]
 
         # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
         prompt_builder = self.prompt_builder_fn("openvla")
+
+        # Get future action chunk
+        future_actions = rlds_batch["action"][1:]
+        future_actions_string = ''.join(self.action_tokenizer(future_actions))
+
+        # Get action chunk string
+        current_action_string = self.action_tokenizer(current_action)
+        action_chunk_string = current_action_string + future_actions_string
+        action_chunk_len = len(action_chunk_string)
+
         conversation = [
             {"from": "human", "value": f"What action should the robot take to {lang}?"},
-            {"from": "gpt", "value": self.action_tokenizer(action)},
+            {"from": "gpt", "value": action_chunk_string},
         ]
         for turn in conversation:
             prompt_builder.add_turn(turn["from"], turn["value"])
@@ -60,11 +69,26 @@ class RLDSBatchTransform:
         pixel_values = self.image_transform(img)
 
         # [CRITICAL] We do not want to take the loss for anything but the predicted action tokens!
-        labels[: -(len(action) + 1)] = IGNORE_INDEX
+        labels[: -(action_chunk_len + 1)] = IGNORE_INDEX
         if not self.predict_stop_token:
             labels[-1] = IGNORE_INDEX
 
-        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name)
+        return_dict = dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name, actions=actions)
+
+        # Add additional inputs
+        if self.use_wrist_image:
+            all_wrist_pixels = []
+            for k in rlds_batch["observation"].keys():
+                if "wrist" in k:
+                    img_wrist = Image.fromarray(rlds_batch["observation"][k][0])
+                    pixel_values_wrist = self.image_transform(img_wrist)
+                    all_wrist_pixels.append(pixel_values_wrist)
+            return_dict["pixel_values_wrist"] = torch.cat(all_wrist_pixels, dim=0)
+        if self.use_proprio and "proprio" in rlds_batch["observation"]:
+            proprio = rlds_batch["observation"]["proprio"]
+            return_dict["proprio"] = proprio
+
+        return return_dict
 
 
 class RLDSDataset(IterableDataset):
@@ -89,19 +113,24 @@ class RLDSDataset(IterableDataset):
             mixture_spec = [(self.data_mix, 1.0)]
 
         # fmt: off
+        if "aloha" in self.data_mix:
+            load_camera_views = ("primary", "left_wrist", "right_wrist")
+        else:
+            load_camera_views = ("primary", "wrist")
+
         per_dataset_kwargs, weights = get_oxe_dataset_kwargs_and_weights(
             self.data_root_dir,
             mixture_spec,
-            load_camera_views=("primary",),
+            load_camera_views=load_camera_views,
             load_depth=False,
-            load_proprio=False,
+            load_proprio=True,
             load_language=True,
-            action_proprio_normalization_type=NormalizationType.BOUNDS_Q99,
+            action_proprio_normalization_type=ACTION_PROPRIO_NORMALIZATION_TYPE,
         )
         rlds_config = dict(
             traj_transform_kwargs=dict(
                 window_size=1,                                      # If we wanted to feed / predict more than one step
-                future_action_window_size=0,                        # For action chunking
+                future_action_window_size=NUM_ACTIONS_CHUNK-1,      # For action chunking
                 skip_unlabeled=True,                                # Skip trajectories without language labels
                 goal_relabeling_strategy="uniform",                 # Goals are currently unused
             ),
@@ -176,6 +205,7 @@ class EpisodicRLDSDataset(RLDSDataset):
             ]
             yield out
 
+###
 
 class DummyDataset(Dataset):
     def __init__(
@@ -203,17 +233,28 @@ class DummyDataset(Dataset):
         return 10000
 
     def __getitem__(self, idx):
-        # TODO =>> Load image, action and instruction from disk -- we use dummy values
-        image = Image.fromarray(np.asarray(np.random.rand(224, 224, 3) * 255.0, dtype=np.uint8))
+        """Get a single training example."""
+        # Generate random image, action and instruction
+        image = Image.fromarray(
+            np.asarray(np.random.rand(224, 224, 3) * 255.0, dtype=np.uint8)
+        )
         action = np.asarray(np.random.rand(7), dtype=np.float32)
         instruction = "do something spectacular"
 
-        # Add instruction to VLA prompt
+        # Build conversation prompt
         prompt_builder = self.prompt_builder_fn("openvla")
         conversation = [
-            {"from": "human", "value": f"What action should the robot take to {instruction}?"},
-            {"from": "gpt", "value": self.action_tokenizer(action)},
+            {
+                "from": "human",
+                "value": f"What action should the robot take to {instruction}?"
+            },
+            {
+                "from": "gpt",
+                "value": self.action_tokenizer(action)
+            }
         ]
+
+        # Add conversation turns to prompt builder
         for turn in conversation:
             prompt_builder.add_turn(turn["from"], turn["value"])
 
@@ -230,3 +271,132 @@ class DummyDataset(Dataset):
         labels[: -(len(action) + 1)] = IGNORE_INDEX
 
         return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels)
+    
+
+from typing import Callable
+
+from lerobot.common.datasets.lerobot_dataset import (
+    LeRobotDataset,
+    LeRobotDatasetMetadata,
+)
+
+
+class RLDSLeRobotDataset(LeRobotDataset):
+
+    def __init__(
+        self,
+        repo_id: str,
+        action_tokenizer: ActionTokenizer,
+        base_tokenizer: PreTrainedTokenizerBase,
+        image_transform: ImageTransform,
+        prompt_builder_fn: Type[PromptBuilder],
+        *,
+        root: str | Path | None = None,
+        episodes: list[int] | None = None,
+        image_transforms: Callable | None = None,
+        delta_timestamps: dict[list[float]] | None = None,
+        tolerance_s: float = 1e-4,
+        download_videos: bool = True,
+        local_files_only: bool = False,
+        video_backend: str | None = None,
+    ) -> None:
+        super().__init__(
+            repo_id,
+            root,
+            episodes,
+            image_transforms,
+            delta_timestamps,
+            tolerance_s,
+            download_videos,
+            local_files_only,
+            video_backend,
+        )
+        assert isinstance(self.meta, LeRobotDatasetMetadata)
+
+        self.action_tokenizer = action_tokenizer
+        self.base_tokenizer = base_tokenizer
+        self.image_transform = image_transform
+        self.prompt_builder_fn = prompt_builder_fn
+
+        # NOTE: We expect the dataset to store statistics for action de-normalization:
+        # 1/100st quantile of each action under "q01" and 99/100th quantile under "q99".
+        print(self.meta.stats)
+        self.dataset_statistics = {
+            "rlds_lerobot_dataset": {
+                "action": {
+                    "q01": np.array(self.meta.stats["action"]["q01"]),
+                    "q99": np.array(self.meta.stats["action"]["q99"]),
+                }
+            }
+        }
+        
+        # NOTE: This is hardcoded as a social contract.
+        # This is the only key to image observations that will be used.
+        self.obs_image_key = "observation.images.side"
+
+
+    def __len__(self):
+        return self.num_frames
+
+    # Retrieves a single (instruction, image, action) triple from the dataset.
+    def __getitem__(self, idx):
+
+        hf_item = super().__getitem__(idx)
+
+        # Retrieve image observation.
+        img_array: np.ndarray = (
+            hf_item[self.obs_image_key]
+            .permute(1, 2, 0)
+            .numpy() * 255
+        ).astype(np.uint8)
+        image = Image.fromarray(img_array)
+
+        # Retrieve instruction.
+        task_idx: torch.Tensor = hf_item["task_index"]
+        task_idx: int = task_idx.item()
+        instruction = self.meta.tasks[task_idx]
+
+        # Retrieve action.
+        action: torch.Tensor = torch.cat([
+            hf_item["action.pose"],
+            hf_item["action.gripper"].unsqueeze(0)
+        ])
+        
+        qs = self.dataset_statistics["rlds_lerobot_dataset"]["action"]
+        q01, q99 = np.array(qs["q01"]), np.array(qs["q99"])
+        action = (2*action - q01 - q99) / (q99 - q01) # normalize to [-1, 1]
+        action: str = self.action_tokenizer(action)
+
+        # Add instruction to VLA prompt.
+        prompt_builder = self.prompt_builder_fn("openvla")
+        conversation = [
+            {
+                "from": "human",
+                "value": f"Hey I need the robot to do this: {instruction}. We upgraded from the old pincer gripper to this new suction cup end effector - it's that blue circular cup with the yellow ring at the end of the silver arm. Big difference is we can't tell if it's got a good seal just by looking at it (unlike before where we could see the gripper fingers close). Also the suction cup needs a flat surface to grip well, and we need enough vacuum pressure for different weights. Sometimes we need to wiggle it a bit to break the seal when releasing too. What's the best way to handle this with the new setup?"
+            },
+            {
+                "from": "gpt",
+                "value": f"{action}"
+            },
+        ]
+        for turn in conversation:
+            prompt_builder.add_turn(turn["from"], turn["value"])
+        prompt = prompt_builder.get_prompt()
+
+        # Tokenize (w/ `base_tokenizer`)
+        input_ids = self.base_tokenizer(
+            prompt,
+            add_special_tokens=True
+        ).input_ids
+        labels = list(input_ids)
+
+        # Tensorize =>> Run Image Transform to get `pixel_values` =>> Return
+        #   =>> IMPORTANT :: IF WE'RE USING HF .forward(..., labels=labels), SHIFTING HAPPENS _INSIDE_ MODEL!
+        input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
+        pixel_values = self.image_transform(image)
+
+        # [CRITICAL] We do not want to take the loss for anything but the predicted action tokens!
+        labels[: -(len(action) + 1)] = IGNORE_INDEX
+
+        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels)
+    

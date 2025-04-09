@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+PYTHONPATH="$PYTHONPATH:$(pwd)/lerobot" && \
+torchrun --standalone --nnodes 1 --nproc-per-node 1 vla-scripts/finetune.py \
+	--vla_path "openvla/openvla-7b" \
+	--data_root_dir "data/robotgeneralist" \
+	--dataset_name "nomagic-simple-box" \
+	--run_root_dir ".runs/" \
+	--shuffle_buffer_size 100000 \
+	--use_l1_regression True \
+	--use_diffusion False \
+	--num_diffusion_steps 50 \
+	--use_film True \
+	--num_images_in_input 1 \
+	--use_proprio False \
+	--batch_size 1 \
+	--learning_rate 5e-4 \
+	--lr_warmup_steps 0 \
+	--num_steps_before_decay 100000 \
+	--grad_accumulation_steps 8 \
+	--max_steps 200000 \
+	--use_val_set True \
+	--val_freq 10000 \
+	--val_time_limit 180 \
+	--save_freq 1000 \
+	--save_latest_checkpoint_only False \
+	--resume False \
+	--resume_step None \
+	--image_aug True \
+	--diffusion_sample_freq 50 \
+	--use_lora True \
+	--lora_rank 32 \
+	--lora_dropout 0.1 \
+	--merge_lora_during_training False \
+	--wandb_entity robotgeneralist \
+	--wandb_project ur5e \
+	--wandb_log_freq 10 \
+	--use_lerobot_dataset True \
+	--lerobot_dataset_root_dir "data" \
+	--lerobot_dataset_name "robotgeneralist/nomagic-simple-box" \
+	--lerobot_tolerance_s 0.01 
+

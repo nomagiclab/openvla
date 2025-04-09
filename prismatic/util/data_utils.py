@@ -5,10 +5,19 @@ General utilities and classes for facilitating data loading and collation.
 """
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Sequence, Tuple
+from typing import (
+    Any,
+    Callable, 
+    Dict, 
+    Sequence, 
+    Tuple, 
+)
 
+import numpy as np
 import torch
+from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
+
 
 # HuggingFace Default / LLaMa-2 IGNORE_INDEX (for labels)
 IGNORE_INDEX = -100
@@ -24,6 +33,33 @@ def tree_map_with_key(fn: Callable, tree: dict, keys: Sequence = ()) -> dict:
     return {
         k: tree_map_with_key(fn, v, (*keys, k)) if isinstance(v, dict) else fn((*keys, k), v) for k, v in tree.items()
     }
+
+
+def greyscale_float_tensor_preprocessing_wrapper(
+    transform_fn: Callable[[Image.Image | np.ndarray], Any]
+) -> Callable[[torch.Tensor | Image.Image | np.ndarray], Any]:
+    """
+    Wraps a transform function that expects PIL Images to work with greyscale float tensors.
+    
+    Args:
+        transform_fn: A function that takes a PIL Image / numpy arrayand transforms it
+        
+    Returns:
+        A function that can handle greyscale float tensors, PIL Images, and numpy arrays
+    """
+    def wrapper(tensor_image):
+        if isinstance(tensor_image, torch.Tensor):
+            # Convert tensor to PIL Image
+            # The tensor is expected to be [C, H, W] with values in [0, 1]
+            img_array = (tensor_image.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+            pil_image = Image.fromarray(img_array)
+            # Apply the transform
+            return transform_fn(pil_image)
+        else:
+            # If it's something else, let the transform function handle it
+            return transform_fn(tensor_image)
+    
+    return wrapper
 
 
 @dataclass
@@ -123,19 +159,32 @@ class PaddedCollatorForActionPrediction:
 
         # Stack all `pixel_values` --> depending on type is torch.Tensor or Dict[str, torch.Tensor]
         if isinstance(pixel_values[0], torch.Tensor):
-            pixel_values = torch.stack(pixel_values)
-        elif isinstance(pixel_values[0], dict):
-            pixel_values = {
-                k: torch.stack([pixel_values[idx][k] for idx in range(len(input_ids))]) for k in pixel_values[0]
-            }
+            if "pixel_values_wrist" in instances[0]:
+                pixel_values_wrist = [instance["pixel_values_wrist"] for instance in instances]
+                pixel_values = torch.cat((torch.stack(pixel_values), torch.stack(pixel_values_wrist)), dim=1)
+            else:
+                pixel_values = torch.stack(pixel_values)
         else:
             raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
 
+        # Stack all actions
+        actions = [torch.from_numpy(np.copy(instance["actions"])) for instance in instances]
+        actions = torch.stack(actions)
+
+        # Stack proprio
+        if "proprio" in instances[0]:
+            proprio = [instance["proprio"] for instance in instances]
+            proprio = torch.Tensor(np.squeeze(np.stack(proprio)))
+        else:
+            proprio = None
+
         output = dict(
             pixel_values=pixel_values,
+            proprio=proprio,
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
+            actions=actions,
         )
         if dataset_names is not None:
             output["dataset_names"] = dataset_names
