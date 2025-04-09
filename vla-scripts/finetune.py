@@ -62,7 +62,6 @@ from prismatic.training.train_utils import (
 from prismatic.util.extern.hf.lerobot_utils import (
     create_action_norm_stats_dict_from_lerobot_dataset,
     create_rlds_dataset_stats_dict_from_lerobot_dataset,
-    create_train_val_split_from_lerobot_dataset,
     VLACollatorForLeRobotDataset,
 )
 from prismatic.vla.action_tokenizer import ActionTokenizer
@@ -142,8 +141,6 @@ class FinetuneConfig:
     lerobot_dataset_name: str = "robotgeneralist/nomagic-simple-box"
     lerobot_tolerance_s: float = 0.01
 
-    # Environment
-    constants_config: str = "ur5e"                   # Which set of constants (from constants.py) to use
     # fmt: on
     
 
@@ -1013,6 +1010,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             video_backend=None,
         )
 
+
     # batch_transform = RLDSBatchTransform(
     #     action_tokenizer,
     #     processor.tokenizer,
@@ -1057,11 +1055,15 @@ def finetune(cfg: FinetuneConfig) -> None:
         )
         
         if cfg.use_val_set:
-            train_subset, val_subset \
-                = create_train_val_split_from_lerobot_dataset(
-                    train_dataset,
-                    split=0.1,
-                )
+            from torch.utils.data import Subset
+            
+            indices = list(range(len(train_dataset)))
+            np.random.shuffle(indices)
+            split = int(np.floor(0.2 * len(train_dataset)))
+            train_indices, val_indices = indices[split:], indices[:split]
+            
+            train_subset = Subset(train_dataset, train_indices)
+            val_subset = Subset(train_dataset, val_indices)
             
             train_sampler = RandomSampler(train_subset)
             dataloader = DataLoader(

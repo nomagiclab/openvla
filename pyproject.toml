@@ -58,7 +58,6 @@ dependencies = [
     "uvicorn",
     "fastapi",
     "json-numpy",
-    "robot-interface @ file:../robot-interface",
 ]
 
 [project.optional-dependencies]
