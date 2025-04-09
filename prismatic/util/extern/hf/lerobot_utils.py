@@ -14,7 +14,6 @@ from typing import (
 import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import Subset
 from transformers import PreTrainedTokenizerBase
 
 from lerobot.common.datasets.lerobot_dataset import LeRobotDataset

@@ -62,7 +62,6 @@ from prismatic.training.train_utils import (
 from prismatic.util.extern.hf.lerobot_utils import (
     create_action_norm_stats_dict_from_lerobot_dataset,
     create_rlds_dataset_stats_dict_from_lerobot_dataset,
-    create_train_val_split_from_lerobot_dataset,
     VLACollatorForLeRobotDataset,
 )
 from prismatic.vla.action_tokenizer import ActionTokenizer
@@ -142,8 +141,6 @@ class FinetuneConfig:
     lerobot_dataset_name: str = "robotgeneralist/nomagic-simple-box"
     lerobot_tolerance_s: float = 0.01
 
-    # Environment
-    constants_config: str = "ur5e"                   # Which set of constants (from constants.py) to use
     # fmt: on
     
 
@@ -1012,6 +1009,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             local_files_only=True,
             video_backend=None,
         )
+
 
     # batch_transform = RLDSBatchTransform(
     #     action_tokenizer,
