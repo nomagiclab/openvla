@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH -N 1
 #SBATCH -n 1
-#SBATCH -c 8
-#SBATCH --gres=gpu:1
-#SBATCH -t 6:00:00
+#SBATCH -c 16
+#SBATCH --gres=gpu:2
+#SBATCH -t 48:00:00
 #SBATCH -p a100
-#SBATCH --mem=50G
+#SBATCH --mem=100G
 #SBATCH -o .slurmlog/slurm-%j.out
 #SBATCH -e .slurmlog/slurm-%j.err
 
@@ -41,27 +41,49 @@ fi
 # Note: We use the absolute path to finetune.py to avoid issues with
 #       relative paths within the Slurm job.
 PYTHONPATH="$PYTHONPATH:$(pwd)/lerobot" \
+mkdir -p "$(pwd)/.runs" && \
+mkdir -p "$(pwd)/.slurmlog" && \
 torchrun \
     --standalone \
     --nnodes 1 \
-    --nproc-per-node 1 \
+    --nproc-per-node 2 \
     "$(pwd)"/vla-scripts/finetune.py \
     --vla_path "openvla/openvla-7b" \
     --data_root_dir "data" \
     --dataset_name "nomagic-simple-box" \
     --run_root_dir ".runs/" \
-    --adapter_tmp_dir ".adapter/" \
-    --lora_rank 32 \
-    --batch_size 16 \
-    --grad_accumulation_steps 1 \
+    --shuffle_buffer_size 100000 \
+    --use_l1_regression true \
+    --use_diffusion false \
+    --num_diffusion_steps 50 \
+    --use_film true \
+    --num_images_in_input 3 \
+    --use_proprio false \
+    --batch_size 4 \
     --learning_rate 5e-4 \
-    --image_aug True \
-    --max_steps 25000 \
-    --save_steps 1000 \
-    --save_latest_checkpoint_only False \
-    --tolerance_s 0.01 \
+    --lr_warmup_steps 0 \
+    --num_steps_before_decay 100000 \
+    --grad_accumulation_steps 2 \
+    --max_steps 200000 \
+    --use_val_set true \
+    --val_freq 1000 \
+    --val_time_limit 180 \
+    --save_freq 1000 \
+    --save_latest_checkpoint_only true \
+    --resume false \
+    --image_aug true \
+    --use_lora true \
+    --lora_rank 32 \
+    --lora_dropout 0.1 \
+    --merge_lora_during_training false \
     --wandb_entity robotgeneralist \
-    --wandb_project openvla
+    --wandb_project openvla \
+    --wandb_log_freq 100 \
+    --use_lerobot_dataset true \
+    --lerobot_dataset_root_dir "data" \
+    --lerobot_dataset_name "robotgeneralist/nomagic-simple-box-action-chunk-size-8" \
+    --lerobot_tolerance_s 0.01 \
+    --constants_config ur5e
 
 # To run this script, edit the options above, and then 
 # execute the following command from the root repository directory:

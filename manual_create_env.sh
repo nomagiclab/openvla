@@ -73,13 +73,22 @@ function download_model {
   huggingface-cli download openvla/openvla-7b || exit 1
 }
 
+function create_save_dirs {
+  verify_directory
+  mkdir -p data
+  mkdir -p .runs
+  mkdir -p .slurmlog
+}
+
 function main {
   check_virtualenv
   verify_directory
   setup_virtualenv
   install_dependencies
   download_model
+  create_save_dirs
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   main "$@"
+fi
