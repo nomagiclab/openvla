@@ -1179,10 +1179,12 @@ def finetune(cfg: FinetuneConfig) -> None:
                     )
 
                 # Optimizer Step
-                if (
-                    (batch_idx + 1) % cfg.grad_accumulation_steps == 0
-                    or batch_idx == len(dataloader) - 1
-                ):
+                max_num_grad_acc_steps_done: bool \
+                    = (batch_idx + 1) % cfg.grad_accumulation_steps == 0
+                all_batches_done: bool \
+                    = batch_idx == len(dataloader) - 1
+                time_to_step: bool = max_num_grad_acc_steps_done or all_batches_done
+                if time_to_step:
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
@@ -1190,7 +1192,11 @@ def finetune(cfg: FinetuneConfig) -> None:
                     total_gradient_step_idx += 1
 
                 # Save model checkpoint:o either keep latest checkpoint only or all checkpoints
-                if epoch_gradient_step_idx > 0 and log_step % cfg.save_freq == 0:
+                if (
+                    time_to_step
+                    and log_step > 0
+                    and log_step % cfg.save_freq == 0
+                ):
                     save_training_checkpoint(
                         cfg=cfg,
                         run_dir=run_dir,
@@ -1205,7 +1211,12 @@ def finetune(cfg: FinetuneConfig) -> None:
                     )
 
                 # Test model on validation set
-                if cfg.use_val_set and log_step > 0 and log_step % cfg.val_freq == 0:
+                if (
+                    time_to_step
+                    and cfg.use_val_set
+                    and log_step > 0
+                    and log_step % cfg.val_freq == 0
+                ):
                     run_validation(
                         vla=vla,
                         action_head=action_head,

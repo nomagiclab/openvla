@@ -41,6 +41,8 @@ fi
 # Note: We use the absolute path to finetune.py to avoid issues with
 #       relative paths within the Slurm job.
 PYTHONPATH="$PYTHONPATH:$(pwd)/lerobot" \
+mkdir -p "$(pwd)/.runs" && \
+mkdir -p "$(pwd)/.slurmlog" && \
 torchrun \
     --standalone \
     --nnodes 1 \
